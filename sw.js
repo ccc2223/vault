@@ -1,4 +1,4 @@
-const CACHE = 'vault-v1';
+const CACHE = 'vault-v2';
 const CORE = [
   './', 'index.html', 'manifest.webmanifest', 'icon.svg',
   'https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js',
@@ -17,12 +17,12 @@ self.addEventListener('activate', e => {
   );
 });
 
-// Stale-while-revalidate for the app shell and CDN libs; never touch the GitHub API.
+// Stale-while-revalidate for the app shell and CDN libs only; sync traffic is never cached.
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.hostname === 'api.github.com') return;
+  if (url.origin !== self.location.origin && url.hostname !== 'cdnjs.cloudflare.com') return;
   e.respondWith(
     caches.open(CACHE).then(async cache => {
       const hit = await cache.match(req, { ignoreSearch: true });

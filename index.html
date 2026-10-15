@@ -114,12 +114,21 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 </section>
 
 <dialog id="dlg-cfg">
-  <h3 style="margin:0">GitHub sync (free)</h3>
-  <p class="hint">Notes sync as plain .md files to a private GitHub repo. Use a fine-grained token limited to that repo with Contents: read &amp; write.</p>
-  <label>Repository (owner/name)</label><input id="c-repo" placeholder="you/my-vault">
+  <h3 style="margin:0">Sync</h3>
+  <div class="row" style="justify-content:flex-start;margin-top:10px"><button id="c-m-s">Password</button><button id="c-m-t">Access token</button></div>
+  <div id="c-s">
+    <label>Sync server URL</label><input id="c-url" placeholder="https://vault-sync.you.workers.dev" autocomplete="url">
+    <label>Password</label><input id="c-pw" type="password" autocomplete="current-password">
+    <p class="hint">Your GitHub token stays on the sync server. This device only keeps a sign-in session.</p>
+  </div>
+  <div id="c-t">
+    <label>Repository (owner/name)</label><input id="c-repo" placeholder="you/my-vault">
+    <label>Access token</label><input id="c-token" type="password" placeholder="github_pat_…">
+    <p class="hint">Direct mode: a fine-grained token limited to the notes repo, Contents: read &amp; write, stored in this browser.</p>
+  </div>
   <label>Branch</label><input id="c-branch" placeholder="main">
-  <label>Access token</label><input id="c-token" type="password" placeholder="github_pat_…">
-  <div class="row"><button id="c-clear">Disconnect</button><button id="c-cancel">Cancel</button><button id="c-save" class="on">Save &amp; sync</button></div>
+  <p id="c-err" class="hint"></p>
+  <div class="row"><button id="c-clear">Sign out</button><button id="c-cancel">Cancel</button><button id="c-save" class="on">Save &amp; sync</button></div>
 </dialog>
 
 <dialog id="dlg-qs">
@@ -131,6 +140,8 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <script>
 'use strict';
+// Set this to your sync server (Cloudflare Worker) URL so new devices only need the password.
+const SYNC_URL = '';
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const baseName = p => p.replace(/^.*\//, '').replace(/\.md$/i, '');
@@ -468,12 +479,15 @@ const b64e = s => { const b = new TextEncoder().encode(s); let bin = ''; b.forEa
 const b64d = s => { const bin = atob(s.replace(/\s/g, '')); return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))); };
 async function gh(path, opts = {}) {
   const c = getCfg();
-  const r = await fetch('https://api.github.com/repos/' + c.repo + path, {
-    ...opts,
-    headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + c.token, 'X-GitHub-Api-Version': '2022-11-28', ...(opts.headers || {}) }
-  });
+  const viaServer = !!c.url;
+  const base = viaServer ? c.url.replace(/\/+$/, '') + '/gh' : 'https://api.github.com/repos/' + c.repo;
+  const headers = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + (viaServer ? c.session : c.token) };
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  if (!viaServer) headers['X-GitHub-Api-Version'] = '2022-11-28';
+  const r = await fetch(base + path, { ...opts, headers, cache: 'no-store' });
   if (!r.ok) {
     let msg = ''; try { msg = (await r.json()).message; } catch {}
+    if (r.status === 401 && viaServer) msg = 'signed out, sign in again in ⚙';
     throw new Error(r.status + (msg ? ' ' + msg : ''));
   }
   return r.json();
@@ -551,19 +565,61 @@ async function sync() {
 }
 
 /* settings dialog */
+let cfgMode = 'server';
+function setCfgMode(m) {
+  cfgMode = m;
+  $('#c-s').style.display = m === 'server' ? '' : 'none';
+  $('#c-t').style.display = m === 'token' ? '' : 'none';
+  $('#c-m-s').classList.toggle('on', m === 'server');
+  $('#c-m-t').classList.toggle('on', m === 'token');
+}
+$('#c-m-s').onclick = () => setCfgMode('server');
+$('#c-m-t').onclick = () => setCfgMode('token');
 $('#cfg').onclick = () => {
   const c = getCfg() || {};
-  $('#c-repo').value = c.repo || ''; $('#c-branch').value = c.branch || 'main'; $('#c-token').value = c.token || '';
+  $('#c-url').value = c.url || localStorage.getItem('vault.url') || SYNC_URL;
+  $('#c-pw').value = '';
+  $('#c-pw').placeholder = c.session ? 'Signed in (enter to sign in again)' : '';
+  $('#c-repo').value = c.repo || ''; $('#c-token').value = c.token || '';
+  $('#c-branch').value = c.branch || 'main';
+  $('#c-err').textContent = '';
+  setCfgMode(c.token ? 'token' : 'server');
   $('#dlg-cfg').showModal();
 };
 $('#c-cancel').onclick = () => $('#dlg-cfg').close();
 $('#c-clear').onclick = () => { localStorage.removeItem('vault.gh'); $('#dlg-cfg').close(); setStatus('Local only — set up sync in ⚙'); };
-$('#c-save').onclick = () => {
-  const repo = $('#c-repo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
-  const token = $('#c-token').value.trim(), branch = $('#c-branch').value.trim() || 'main';
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token) { alert('Enter repository as owner/name and an access token.'); return; }
-  localStorage.setItem('vault.gh', JSON.stringify({ repo, branch, token }));
-  $('#dlg-cfg').close(); sync();
+$('#c-save').onclick = async () => {
+  const branch = $('#c-branch').value.trim() || 'main';
+  const say = t => { $('#c-err').textContent = t; };
+  if (cfgMode === 'server') {
+    const url = $('#c-url').value.trim().replace(/\/+$/, '');
+    const pw = $('#c-pw').value;
+    const old = getCfg();
+    if (!/^https:\/\/[^/\s]+/.test(url)) { say('Enter the sync server URL (https://…).'); return; }
+    if (!pw) {
+      if (old && old.url === url && old.session) {
+        localStorage.setItem('vault.gh', JSON.stringify({ ...old, branch }));
+        $('#dlg-cfg').close(); sync(); return;
+      }
+      say('Enter your password.'); return;
+    }
+    $('#c-save').disabled = true; say('Signing in…');
+    try {
+      const r = await fetch(url + '/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.session) { say(j.message || ('Sign-in failed (' + r.status + ')')); return; }
+      localStorage.setItem('vault.gh', JSON.stringify({ url, session: j.session, branch }));
+      localStorage.setItem('vault.url', url);
+      $('#dlg-cfg').close(); sync();
+    } catch { say('Could not reach the sync server. Check the URL.'); }
+    finally { $('#c-save').disabled = false; }
+  } else {
+    const repo = $('#c-repo').value.trim().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '');
+    const token = $('#c-token').value.trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !token) { say('Enter repository as owner/name and an access token.'); return; }
+    localStorage.setItem('vault.gh', JSON.stringify({ repo, branch, token }));
+    $('#dlg-cfg').close(); sync();
+  }
 };
 
 /* ---------- toolbar / shortcuts ---------- */

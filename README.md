@@ -27,8 +27,19 @@ Ctrl/Cmd+O switcher · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift
 2. Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate.
 3. Limit it to `my-vault` only, permission **Contents: Read and write**.
 
-**3. Connect**
-Open the app → ⚙ → enter `you/my-vault`, branch `main`, and the token → Save & sync. Repeat on each device (the token is stored only in that browser's localStorage).
+**3. Sync server (password sign-in, recommended)**
+`worker.js` is a free Cloudflare Worker that keeps the token server-side, so each device only needs a password.
+1. dash.cloudflare.com → Workers & Pages → Create → Worker → name it `vault-sync` → Deploy → Edit code → paste `worker.js` → Deploy.
+2. Worker → Settings → Variables and Secrets, add:
+   - `GH_TOKEN` (Secret): the fine-grained token
+   - `PASSWORD` (Secret): a long password
+   - `REPO` (Text): `you/my-vault`
+   - `ALLOWED_ORIGIN` (Text): `https://<you>.github.io`
+3. Optional: set `SYNC_URL` near the top of `index.html` to the Worker URL so new devices only ask for the password.
+
+**4. Connect**
+Open the app → ⚙ → Password → Worker URL and password → Save & sync. Sessions last 90 days; changing `PASSWORD` or `GH_TOKEN` signs out every device.
+(Direct mode is still available under ⚙ → Access token, which stores the token in that browser.)
 
 Alternative hosts: Cloudflare Pages or Netlify drop-in work too, since it's just static files.
 
