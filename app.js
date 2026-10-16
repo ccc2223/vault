@@ -20,7 +20,7 @@ const DB = {
 /* ---------- state ---------- */
 const notes = new Map();   // path -> {path, content, mtime, sha, dirty, deleted}
 let cur = null;            // current path
-let index = { byPath: new Map(), byBase: new Map() };
+let index = { byPath: new Map(), byBase: new Map(), files: new Map(), fileBase: new Map() };
 
 /* ---------- spaces ---------- */
 // A space is a top-level folder listed in .vault/spaces.json. Main ('') holds every note outside those folders.
@@ -63,11 +63,17 @@ function mergeSpaces(local, remote) {
 
 function rebuildIndex() {
   loadSpaces();
-  index = { byPath: new Map(), byBase: new Map() };
+  index = { byPath: new Map(), byBase: new Map(), files: new Map(), fileBase: new Map() };
   for (const n of live().sort((a, b) => a.path.length - b.path.length)) {
     index.byPath.set(rel(n.path).toLowerCase(), n.path);
     const b = baseName(n.path).toLowerCase();
     if (!index.byBase.has(b)) index.byBase.set(b, n.path);
+  }
+  // Attachments downloaded to this device, in the current space. Nothing is indexed while locking.
+  if (Auth.active) for (const f of [...Auth.store.files.values()].filter(f => spaceOf(f.path) === space).sort((a, b) => a.path.length - b.path.length)) {
+    index.files.set(rel(f.path).toLowerCase(), f.path);
+    const b = f.path.replace(/^.*\//, '').toLowerCase();
+    if (!index.fileBase.has(b)) index.fileBase.set(b, f.path);
   }
 }
 function resolve(target) {
@@ -75,11 +81,51 @@ function resolve(target) {
   if (t.includes('/')) return index.byPath.get(t + '.md') || index.byBase.get(t.replace(/^.*\//, '')) || null;
   return index.byBase.get(t) || null;
 }
+// Attachments resolve like Obsidian: path from the space root, then relative to the note, then by file name.
+function resolveFile(target, from) {
+  let t = target.trim().replace(/\\/g, '/');
+  try { t = decodeURI(t); } catch {}
+  const join = p => { const out = []; for (const s of p.split('/')) { if (s === '..') out.pop(); else if (s && s !== '.') out.push(s); } return out.join('/').toLowerCase(); };
+  const dir = from ? rel(from).replace(/[^/]*$/, '') : '';
+  return index.files.get(join(t)) || index.files.get(join(dir + t)) || index.fileBase.get(t.replace(/^.*\//, '').toLowerCase()) || null;
+}
 
 /* ---------- markdown ---------- */
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+const fileName = p => p.replace(/^.*\//, '');
+function fileLink(path) { return `<a class="att-link" data-file="${esc(path)}" title="Download">📎 ${esc(fileName(path))}</a>`; }
+// ![[file]], ![[file|300]] and ![[file|300x200]]. Embeds of notes stay links for now.
+function embedHTML(target, option) {
+  const p = resolveFile(target, cur);
+  if (p && IMAGE.test(p)) {
+    const size = /^(\d+)(?:x(\d+))?$/.exec(option);
+    return `<img data-file="${esc(p)}" alt="${esc(size ? fileName(p) : option || fileName(p))}"` +
+      (size ? ` width="${size[1]}"${size[2] ? ` height="${size[2]}"` : ''}` : '') + '>';
+  }
+  if (p) return fileLink(p);
+  if (/\.[a-z0-9]+$/i.test(target) && !/\.md$/i.test(target)) return `<span class="att-missing">${esc(fileName(target))}</span>`;
+  const ok = resolve(target);
+  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}">${esc(option || target)}</a>`;
+}
 marked.use({
   gfm: true, breaks: true,
+  renderer: {
+    // Relative image paths are attachments; they get their source from the encrypted store after rendering.
+    image(href, title, text) {
+      if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href)) return false;
+      const p = resolveFile(href, cur);
+      return p ? `<img data-file="${esc(p)}" alt="${text}"${title ? ` title="${esc(title)}"` : ''}>` : `<span class="att-missing">${text || esc(href)}</span>`;
+    }
+  },
   extensions: [{
+    name: 'embed', level: 'inline',
+    start(src) { return src.indexOf('![['); },
+    tokenizer(src) {
+      const m = /^!\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|([^\]]*))?\]\]/.exec(src);
+      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), option: (m[2] || '').trim() };
+    },
+    renderer(t) { return embedHTML(t.target, t.option); }
+  }, {
     name: 'wikilink', level: 'inline',
     start(src) { return src.indexOf('[['); },
     tokenizer(src) {
@@ -88,6 +134,7 @@ marked.use({
     },
     renderer(t) {
       const ok = resolve(t.target);
+      if (!ok && !/\.md$/i.test(t.target)) { const f = resolveFile(t.target, cur); if (f) return fileLink(f); }
       return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(t.target)}">${esc(t.text)}</a>`;
     }
   }]
@@ -100,6 +147,36 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
 function renderPreview() {
   const n = notes.get(cur);
   $('#pv').innerHTML = n ? DOMPurify.sanitize(marked.parse(n.content)) : '';
+  const epoch = Auth.epoch;
+  for (const img of $('#pv').querySelectorAll('img[data-file]')) {
+    const f = Auth.store.files.get(img.dataset.file);
+    if (f) fileURL(f).then(url => { if (epoch === Auth.epoch && img.isConnected) img.src = url; }, () => img.classList.add('broken'));
+  }
+}
+
+/* ---------- attachments ---------- */
+const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp' };
+const fileURLs = new Map();   // file id -> Promise of an object URL, most recently created last
+// Raster images become typed blob: URLs. SVG becomes a data: URL: a blob: URL shares the app's origin, so an
+// SVG (or any document) opened from one in a new tab could run script with access to this app's storage.
+function fileURL(f) {
+  if (!fileURLs.has(f.id)) {
+    fileURLs.set(f.id, Auth.store.getFile(f.id).then(bytes => {
+      const ext = f.path.replace(/^.*\./, '').toLowerCase();
+      return ext === 'svg' ? 'data:image/svg+xml;base64,' + bytesB64(bytes) : URL.createObjectURL(new Blob([bytes], { type: MIME[ext] || 'application/octet-stream' }));
+    }));
+    fileURLs.get(f.id).catch(() => fileURLs.delete(f.id));
+    if (fileURLs.size > 100) { const [id, url] = fileURLs.entries().next().value; fileURLs.delete(id); revoke(url); }
+  }
+  return fileURLs.get(f.id);
+}
+const revoke = url => url.then(u => { if (u.startsWith('blob:')) URL.revokeObjectURL(u); }, () => {});
+// Other attachments are only ever downloaded, never opened in the app's origin.
+async function downloadFile(path) {
+  const f = Auth.store.files.get(path); if (!f) return;
+  const url = URL.createObjectURL(new Blob([await Auth.store.getFile(f.id)], { type: 'application/octet-stream' }));
+  const a = document.createElement('a'); a.href = url; a.download = fileName(path); a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 /* ---------- persistence ---------- */
@@ -276,6 +353,8 @@ ta.addEventListener('input', () => {
   updateSug();
 });
 $('#pv').addEventListener('click', async e => {
+  const file = e.target.closest('a.att-link');
+  if (file) { e.preventDefault(); downloadFile(file.dataset.file).catch(error => setStatus('Could not open attachment: ' + error.message, true)); return; }
   const a = e.target.closest('a.wikilink'); if (!a) return;
   e.preventDefault();
   const t = a.dataset.target, p = resolve(t);
@@ -425,9 +504,11 @@ async function sync() {
     await flush();
     const tree = await gh('/git/trees/' + encodeURIComponent(c.branch || 'main') + '?recursive=1');
     if (tree.truncated) throw new Error('Repository is too large to sync safely.');
+    const visible = t => t.type === 'blob' && !t.path.split('/').some(s => s.startsWith('.'));
     const remote = new Map(tree.tree
-      .filter(t => t.type === 'blob' && (t.path === SPACES || /\.md$/i.test(t.path) && !t.path.split('/').some(s => s.startsWith('.'))))
+      .filter(t => t.path === SPACES || visible(t) && /\.md$/i.test(t.path))
       .map(t => [t.path, t.sha]));
+    const remoteFiles = new Map(tree.tree.filter(t => visible(t) && !/\.md$/i.test(t.path) && !(t.size > FILE_MAX)).map(t => [t.path, t.sha]));
     const today = new Date().toISOString().slice(0, 10);
 
     // pull: fetch changed blobs a few at a time; each result is applied in memory in one synchronous step
@@ -492,14 +573,58 @@ async function sync() {
       showPulled(notes.get(cur));
     }
     renderSpace(); renderList(); renderBacklinks();
-    setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
-      (pushed ? ` · pushed ${pushed}` : '') + (restored ? ` · restored ${restored} deleted note${restored > 1 ? 's' : ''} edited elsewhere` : ''));
+    syncStatus = 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+      (pushed ? ` · pushed ${pushed}` : '') + (restored ? ` · restored ${restored} deleted note${restored > 1 ? 's' : ''} edited elsewhere` : '');
+    setStatus(syncStatus);
+    pullFiles(remoteFiles);
   } catch (e) {
     // Keep what was already pulled or pushed; the lock path persists its own snapshot.
     if (changed && epoch === Auth.epoch) await DB.replace().catch(() => {});
     if (epoch === Auth.epoch) setStatus('Sync failed: ' + e.message, true);
   } finally { if (syncing === epoch) syncing = null; }
 }
+
+// Attachments download after notes, in the background, so a large first download never delays editing or pushes.
+// Only one download runs at a time; a sync that finishes meanwhile queues its newer file list.
+const FILE_MAX = 25 * 1024 * 1024;
+let syncStatus = '', filesRun = null, filesNext = null;
+function pullFiles(remoteFiles) {
+  if (filesRun) { filesNext = remoteFiles; return; }
+  const epoch = Auth.epoch;
+  filesRun = (async () => {
+    for (let want = remoteFiles; want && epoch === Auth.epoch; want = filesNext) { filesNext = null; await pullFilesOnce(epoch, want); }
+  })().catch(error => { if (epoch === Auth.epoch) setStatus('Attachment download failed: ' + error.message, true); })
+    .finally(() => { if (epoch === Auth.epoch) filesRun = null; });
+}
+async function pullFilesOnce(epoch, remoteFiles) {
+  const store = Auth.store, replaced = [];
+  // Metadata is saved before old bytes are deleted; bytes are written before metadata refers to them.
+  const save = async () => {
+    await store.persist(); Auth.ensure(epoch);
+    await store.deleteFiles(replaced.splice(0));
+    rebuildIndex(); renderPreview();
+  };
+  for (const f of [...store.files.values()]) if (!remoteFiles.has(f.path)) { store.files.delete(f.path); replaced.push(f.id); }
+  if (replaced.length) await save();
+  const todo = [...remoteFiles].filter(([p, sha]) => store.files.get(p)?.sha !== sha);
+  let done = 0, unsaved = 0;
+  try {
+    await pool(todo, 3, async ([p, sha]) => {
+      const bytes = b64bytes((await gh('/git/blobs/' + sha)).content);
+      const id = await store.putFile(bytes);
+      Auth.ensure(epoch);
+      const old = store.files.get(p);
+      if (old) replaced.push(old.id);
+      store.files.set(p, { path: p, sha, size: bytes.length, id });
+      setStatus(`${syncStatus} · attachments ${++done}/${todo.length}`);
+      if (++unsaved >= 10) { unsaved = 0; await save(); }
+    });
+  } finally {
+    if (epoch === Auth.epoch && (unsaved || replaced.length)) await save();
+  }
+  if (todo.length) setStatus(`${syncStatus} · ${todo.length} attachment${todo.length === 1 ? '' : 's'} downloaded`);
+}
+const b64bytes = s => Uint8Array.from(atob(s.replace(/\s/g, '')), c => c.charCodeAt(0));
 // Run fn over items with limited concurrency. On failure, stop taking new items and wait for the rest to settle.
 async function pool(items, limit, fn) {
   let next = 0; const errors = [];
@@ -607,7 +732,7 @@ $('#sp-new').onsubmit = async e => {
 /* ---------- import a folder as a space ---------- */
 // A picked or dropped folder (such as an Obsidian vault) becomes a new space. Files reach GitHub byte for byte
 // in one commit: text goes inline in tree requests, other files as blobs. See docs/import-plan.md.
-const IMPORT_MAX = 25 * 1024 * 1024, IMPORT_WARN = 500 * 1024 * 1024;
+const IMPORT_WARN = 500 * 1024 * 1024;
 const JUNK = new Set(['thumbs.db', 'desktop.ini']);
 const TEXT_EXT = /\.(md|txt|canvas|json|css|js|csv|svg|html?|xml|ya?ml|base)$/i;
 const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
@@ -645,7 +770,7 @@ function scanImport(entries) {
     if (dot >= 0) { hidden.add(segs.slice(0, dot + 1).join('/')); continue; }
     if (!rel || !file) continue;
     if (JUNK.has(segs.at(-1).toLowerCase())) { hidden.add(rel); continue; }
-    if (file.size > IMPORT_MAX) { skipped.push(rel + ' (' + mb(file.size) + ')'); continue; }
+    if (file.size > FILE_MAX) { skipped.push(rel + ' (' + mb(file.size) + ')'); continue; }
     files.push({ path: rel, file }); size += file.size;
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
@@ -753,8 +878,12 @@ async function uploadImport(epoch, job, folder, name, signal) {
   }
   await flushTree();
   // 3. Commit it with the updated space list. Holding the sync slot keeps a background sync from pushing in between,
-  //    and from deleting the seeded notes before its next tree read.
-  while (syncing === epoch) await sleep(100, signal);
+  //    and from deleting the seeded notes before its next tree read. An attachment download started from an older
+  //    tree would likewise remove seeded attachments, so it finishes first.
+  while (syncing === epoch || filesRun) {
+    if (filesRun) importProgress('Waiting for attachment downloads to finish…');
+    await sleep(100, signal);
+  }
   Auth.ensure(epoch); syncing = epoch;
   try {
     importProgress('Committing…');
@@ -764,6 +893,20 @@ async function uploadImport(epoch, job, folder, name, signal) {
       const d = job.done.get(f.path), p = folder + '/' + f.path;
       if (!/\.md$/i.test(p) || d.text == null || notes.has(p)) continue;
       notes.set(p, { path: p, content: d.text, mtime: d.mtime, sha: d.sha, dirty: false });
+    }
+    // Attachments are stored from the picked files when they still match what was uploaded.
+    let stored = 0;
+    for (const f of job.files) {
+      const d = job.done.get(f.path), p = folder + '/' + f.path;
+      if (/\.md$/i.test(p) || Auth.store.files.has(p)) continue;
+      try {
+        const bytes = new Uint8Array(await f.file.arrayBuffer());
+        if (await gitSha(bytes) !== d.sha) continue;
+        const id = await Auth.store.putFile(bytes);
+        Auth.ensure(epoch);
+        Auth.store.files.set(p, { path: p, sha: d.sha, size: bytes.length, id });
+        importProgress(`Saving attachments ${++stored}…`);
+      } catch (error) { Auth.ensure(epoch); }
     }
     const sha = await gitSha(new TextEncoder().encode(spaces)), l = notes.get(SPACES);
     if (!l || !l.dirty || l.deleted) notes.set(SPACES, { path: SPACES, content: spaces, mtime: Date.now(), sha, dirty: false });
@@ -928,6 +1071,9 @@ const App = {
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT); clearTimeout(rpT);
     importJob?.ctrl?.abort(); importJob = null;
+    filesRun = null; filesNext = null; syncStatus = '';
+    for (const url of fileURLs.values()) revoke(url);
+    fileURLs.clear();
     notes.clear(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     $('#ta').value = ''; $('#pv').replaceChildren(); $('#list').replaceChildren();
@@ -942,6 +1088,8 @@ const App = {
   },
   async open() {
     for (const note of await DB.all()) notes.set(note.path, note);
+    // Remove attachment bytes an interrupted download or import left without metadata.
+    await Auth.store.sweepFiles().catch(() => {});
     space = ''; rebuildIndex();
     // Older versions stored only the last note's path.
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;

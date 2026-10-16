@@ -3,6 +3,9 @@
   'use strict';
   const ITERATIONS = 600000;
   const AAD = new TextEncoder().encode('vault/local/v1');
+  // Attachments are encrypted one file per record with a random file key kept inside the sealed vault,
+  // so saving a note never re-encrypts them and a password change only re-encrypts the vault record.
+  const fileAAD = id => new TextEncoder().encode('vault/file/v1:' + id);
   const encode = bytes => {
     let text = '';
     for (const byte of bytes) text += String.fromCharCode(byte);
@@ -32,7 +35,8 @@
     const data = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(record.iv), additionalData: AAD },
       key, decode(record.ciphertext));
     const payload = JSON.parse(new TextDecoder().decode(data));
-    if (!Array.isArray(payload.notes) || payload.notes.some(n => typeof n.path !== 'string' || typeof n.content !== 'string')) {
+    if (!Array.isArray(payload.notes) || payload.notes.some(n => typeof n.path !== 'string' || typeof n.content !== 'string') ||
+      payload.files !== undefined && (!Array.isArray(payload.files) || payload.files.some(f => typeof f.path !== 'string' || typeof f.id !== 'string'))) {
       throw new Error('Saved vault has an invalid format. No data was changed.');
     }
     return payload;
@@ -42,13 +46,15 @@
     constructor() {
       this.db = null; this.key = null; this.header = null;
       this.records = new Map(); this.last = null; this.revision = 0;
+      this.files = new Map(); this.fileKey = null; this.fileKeyRaw = null;   // path -> {path, sha, size, id}
       this.queue = Promise.resolve(); this.pending = 0; this.failure = null;
     }
     async open(onBlocked, onVersionChange) {
-      const r = indexedDB.open('vault', 2);
+      const r = indexedDB.open('vault', 3);
       r.onupgradeneeded = () => {
         if (!r.result.objectStoreNames.contains('notes')) r.result.createObjectStore('notes', { keyPath: 'path' });
         if (!r.result.objectStoreNames.contains('sealed')) r.result.createObjectStore('sealed');
+        if (!r.result.objectStoreNames.contains('files')) r.result.createObjectStore('files');
       };
       r.onblocked = () => onBlocked?.();
       this.db = await request(r);
@@ -93,6 +99,7 @@
       this.key = key; this.header = { version: 1, salt: record.salt, iterations: record.iterations };
       this.revision = record.revision; this.records = new Map(payload.notes.map(n => [n.path, n]));
       this.last = payload.last || null; this.failure = null;
+      await this.loadFiles(payload);
       return true;
     }
     async initialize(password) {
@@ -109,12 +116,53 @@
       await this.write({ ...header, ...sealed, revision: 1 }, 0, true);
       this.key = key; this.header = header;
       this.records = new Map(records.map(n => [n.path, n])); this.last = null; this.failure = null;
+      await this.loadFiles({});
+    }
+    async loadFiles(payload) {
+      this.files = new Map((payload.files || []).map(f => [f.path, f]));
+      // A missing key is created now and sealed with the next save, before any file it encrypts is referenced.
+      this.fileKeyRaw = payload.fileKey || encode(crypto.getRandomValues(new Uint8Array(32)));
+      this.fileKey = await crypto.subtle.importKey('raw', decode(this.fileKeyRaw), 'AES-GCM', false, ['encrypt', 'decrypt']);
+    }
+    payload() {
+      return structuredClone({ notes: [...this.records.values()], last: this.last, files: [...this.files.values()], fileKey: this.fileKeyRaw });
+    }
+    // Store bytes under a new random id. Callers record the id in this.files and persist afterwards;
+    // bytes nobody references (an interrupted download) are removed by sweepFiles.
+    async putFile(bytes) {
+      if (!this.fileKey) throw new Error('Vault is locked.');
+      const key = this.fileKey, id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: fileAAD(id) }, key, bytes);
+      if (key !== this.fileKey) throw new Error('Vault is locked.');
+      const tx = this.db.transaction('files', 'readwrite'), done = complete(tx);
+      tx.objectStore('files').put({ iv, data }, id);
+      await done;
+      return id;
+    }
+    async getFile(id) {
+      if (!this.fileKey) throw new Error('Vault is locked.');
+      const key = this.fileKey, record = await request(this.db.transaction('files').objectStore('files').get(id));
+      if (!record) throw new Error('Attachment is missing from this device.');
+      const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.iv, additionalData: fileAAD(id) }, key, record.data));
+      if (key !== this.fileKey) throw new Error('Vault is locked.');
+      return bytes;
+    }
+    async deleteFiles(ids) {
+      if (!ids.length) return;
+      const tx = this.db.transaction('files', 'readwrite'), done = complete(tx);
+      for (const id of ids) tx.objectStore('files').delete(id);
+      await done;
+    }
+    async sweepFiles() {
+      const used = new Set([...this.files.values()].map(f => f.id));
+      await this.deleteFiles((await request(this.db.transaction('files').objectStore('files').getAllKeys())).filter(id => !used.has(id)));
     }
     async all() { if (!this.key) throw new Error('Vault is locked.'); return structuredClone([...this.records.values()]); }
     persist() {
       if (!this.key) return Promise.reject(new Error('Vault is locked.'));
       const key = this.key, header = { ...this.header };
-      const payload = structuredClone({ notes: [...this.records.values()], last: this.last });
+      const payload = this.payload();
       this.pending++;
       const task = this.queue.then(async () => {
         const sealed = await encrypt(key, payload);
@@ -140,14 +188,17 @@
       await decrypt(await derive(oldPassword, record.salt, record.iterations), record);
       const salt = encode(crypto.getRandomValues(new Uint8Array(16)));
       const key = await derive(newPassword, salt);
-      const payload = { notes: [...this.records.values()], last: this.last };
+      const payload = this.payload();
       const sealed = await encrypt(key, payload);
       if (JSON.stringify(await decrypt(key, sealed)) !== JSON.stringify(payload)) throw new Error('Encryption verification failed.');
       const header = { version: 1, salt, iterations: ITERATIONS };
       await this.write({ ...header, ...sealed, revision: this.revision + 1 }, this.revision);
       this.key = key; this.header = header;
     }
-    forget() { this.key = null; this.header = null; this.records.clear(); this.last = null; this.failure = null; }
+    forget() {
+      this.key = null; this.header = null; this.records.clear(); this.last = null; this.failure = null;
+      this.files.clear(); this.fileKey = null; this.fileKeyRaw = null;
+    }
   }
   root.VaultStore = VaultStore;
 })(globalThis);

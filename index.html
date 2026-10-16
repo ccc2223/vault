@@ -57,6 +57,10 @@ input,textarea{font:inherit;color:inherit}
 #pv table{border-collapse:collapse}
 #pv th,#pv td{border:1px solid var(--border);padding:4px 10px}
 #pv img{max-width:100%}
+#pv img[data-file]:not([src]){display:inline-block;min-width:48px;min-height:32px;background:var(--bg3);border-radius:4px}
+#pv a.att-link,#pv .att-missing{border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-size:.92em;text-decoration:none}
+#pv a.att-link{cursor:pointer}
+#pv .att-missing{color:var(--mute);border-style:dashed}
 #pv a{color:var(--accent)}
 #pv a.wikilink{text-decoration:none;border-bottom:1px solid var(--accent);cursor:pointer}
 #pv a.wikilink.missing{opacity:.6;border-bottom-style:dashed}

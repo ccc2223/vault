@@ -47,7 +47,7 @@ async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
       else { const exp = Date.now() + 90 * 86400000; body = { session: exp + '.fake-session', exp }; }
     } else if (pathname.startsWith('/gh/git/trees/')) {
       if (state.delay) { state.started = true; await state.delay; }
-      if (new URL(req.url()).searchParams.has('recursive')) body = { tree: [...remote].map(([name, n]) => ({ path: name, sha: n.sha, type: 'blob' })) };
+      if (new URL(req.url()).searchParams.has('recursive')) body = { tree: [...remote].map(([name, n]) => ({ path: name, sha: n.sha, type: 'blob', size: n.size ?? (n.bytes || Buffer.from(n.content)).length })) };
       else {
         // Top level only, with content-addressed folder ids like GitHub's.
         const top = new Map();
@@ -134,7 +134,7 @@ async function unlock(page, value = password) {
   await page.waitForFunction(() => Auth.active || !!document.getElementById('unlock-error').textContent);
 }
 async function settled(page) {
-  await page.waitForFunction(() => Auth.active && Auth.store.pending === 0 && syncing === null && saveT === null);
+  await page.waitForFunction(() => Auth.active && Auth.store.pending === 0 && syncing === null && filesRun === null && saveT === null);
 }
 async function raw(page) {
   return page.evaluate(async () => ({
@@ -665,6 +665,10 @@ test('importing a folder makes one commit with exact bytes, skips hidden and ove
     assert.deepEqual((await listed(f.page)).sort(), ['My Vault/Home.md', 'My Vault/Ideas/Plan.md', 'My Vault/Latin.md']);
     assert.equal(await f.page.evaluate(() => notes.get('My Vault/Home.md').content), files['Home.md'].toString());
     assert.equal(await f.page.evaluate(() => [...notes.values()].some(n => n.dirty)), false);
+    // Attachments were stored from the picked files, so the embed renders without downloading them.
+    assert.deepEqual(await f.page.evaluate(() => [...Auth.store.files.keys()].sort()), ['My Vault/attachments/pic.png', 'My Vault/board.canvas']);
+    await f.page.evaluate(() => { openNote('My Vault/Home.md'); setMode('view'); });
+    await f.page.waitForFunction(() => document.querySelector('#pv img[data-file="My Vault/attachments/pic.png"]')?.src.startsWith('blob:'));
     await f.page.evaluate(() => openNote('My Vault/Ideas/Plan.md'));
     await f.page.evaluate(() => setMode('view'));
     assert.equal(await f.page.locator('#pv a.wikilink:not(.missing)').textContent(), 'Home');
@@ -743,6 +747,118 @@ test('dropped folders are read in batches and hidden folders are never walked', 
       return { walkedHidden, root: scan.root, files: scan.files.map(x => x.path), hidden: scan.hidden };
     });
     assert.deepEqual(scanned, { walkedHidden: false, root: 'Vault', files: ['a.md', 'Sub/b.md', 'Sub/c.png'], hidden: ['.git'] });
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+async function storedFiles(page) {
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    const r = indexedDB.open('vault');
+    r.onerror = () => reject(r.error);
+    r.onsuccess = () => {
+      const tx = r.result.transaction('files'), store = tx.objectStore('files'), out = {};
+      const keys = store.getAllKeys(), values = store.getAll();
+      tx.oncomplete = () => {
+        r.result.close();
+        resolve({ keys: keys.result, text: values.result.map(v => String.fromCharCode(...new Uint8Array(v.data))).join('') });
+      };
+    };
+  }));
+}
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+test('attachments sync to each device encrypted one file per record, render offline, and follow remote changes', async () => {
+  const f = await fixture({ legacy: false });
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><!-- SVG-MARKER-7f3 --></svg>', pdf = Buffer.from('%PDF-1.4 PDF-MARKER-91a');
+  f.remote.set('Home.md', { sha: 'home', content: '![[pic.png|120]]\n\n![logo](assets/pic.png)\n\n![[diagram.svg]]\n\n![[doc.pdf]] and [[doc.pdf]]\n\n![[gone.png]] ![[Other]]' });
+  f.remote.set('assets/pic.png', { sha: gitSha(png), content: '', bytes: png });
+  f.remote.set('diagram.svg', { sha: 'svg1', content: svg });
+  f.remote.set('docs/doc.pdf', { sha: 'pdf1', content: '', bytes: pdf });
+  f.remote.set('.obsidian/workspace.json', { sha: 'ws', content: '{}' });
+  f.remote.set('huge.mov', { sha: 'huge', content: '', size: 26 * 1024 * 1024 });
+  try {
+    await unlock(f.page); await settled(f.page);
+    assert.deepEqual(await f.page.evaluate(() => [...Auth.store.files.keys()].sort()), ['assets/pic.png', 'diagram.svg', 'docs/doc.pdf']);
+    assert.equal(f.state.calls.some(c => /\/(huge|ws)$/.test(c.pathname)), false);
+    assert.deepEqual((await listed(f.page)).sort(), ['Home.md', 'Welcome.md']);
+    // Attachment bytes and names never reach storage unencrypted.
+    const stored = await storedFiles(f.page), sealed = JSON.stringify(await raw(f.page));
+    assert.equal(stored.keys.length, 3);
+    for (const marker of ['SVG-MARKER', 'PDF-MARKER', 'IHDR']) assert.equal(stored.text.includes(marker), false);
+    for (const name of ['diagram', 'doc.pdf', 'pic.png']) assert.equal(sealed.includes(name) || stored.keys.join().includes(name), false);
+
+    const rendered = async () => {
+      await f.page.evaluate(() => { openNote('Home.md'); setMode('view'); });
+      await f.page.waitForFunction(() => document.querySelectorAll('#pv img[src]').length === 3);
+      return f.page.evaluate(() => ({
+        imgs: [...document.querySelectorAll('#pv img')].map(i => [i.dataset.file, i.getAttribute('src').slice(0, 18), i.getAttribute('width')]),
+        links: [...document.querySelectorAll('#pv a.att-link')].map(a => a.textContent),
+        missing: [...document.querySelectorAll('#pv .att-missing')].map(a => a.textContent),
+        note: document.querySelector('#pv a.wikilink')?.textContent
+      }));
+    };
+    const view = await rendered();
+    assert.deepEqual(view.imgs.map(([p, src, w]) => [p, src.startsWith('blob:') ? 'blob' : src, w]),
+      [['assets/pic.png', 'blob', '120'], ['assets/pic.png', 'blob', null], ['diagram.svg', 'data:image/svg+xml', null]]);
+    assert.deepEqual(view.links, ['📎 doc.pdf', '📎 doc.pdf']);
+    assert.deepEqual(view.missing, ['gone.png']);
+    assert.equal(view.note, 'Other');
+    assert.equal(await f.page.evaluate(() => document.querySelector('#pv img').naturalWidth || new Promise(r => document.querySelector('#pv img').onload = () => r(1))), 1);
+    const [download] = await Promise.all([f.page.waitForEvent('download'), f.page.locator('#pv a.att-link').first().click()]);
+    assert.equal(download.suggestedFilename(), 'doc.pdf');
+    assert.deepEqual(fs.readFileSync(await download.path()), pdf);
+
+    // Offline, attachments still render from the encrypted store.
+    await f.page.locator('#lock').click(); await locked(f.page);
+    assert.equal(await f.page.evaluate(() => Auth.store.files.size + index.files.size + index.fileBase.size + fileURLs.size), 0);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal((await rendered()).imgs.length, 3);
+
+    // Changed and deleted attachments follow the repo; replaced bytes are removed.
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = false;
+    const png2 = Buffer.concat([png, Buffer.from([0])]);
+    f.remote.set('assets/pic.png', { sha: 'pic2', content: '', bytes: png2 });
+    f.remote.delete('diagram.svg');
+    await unlock(f.page); await settled(f.page);
+    assert.deepEqual(await f.page.evaluate(() => [...Auth.store.files.keys()].sort()), ['assets/pic.png', 'docs/doc.pdf']);
+    assert.equal((await storedFiles(f.page)).keys.length, 2);
+    assert.equal(await f.page.evaluate(async () => (await Auth.store.getFile(Auth.store.files.get('assets/pic.png').id)).length), png2.length);
+    await f.page.evaluate(() => { openNote('Home.md'); setMode('view'); });
+    assert.deepEqual(await f.page.locator('#pv .att-missing').allTextContents(), ['diagram.svg', 'gone.png']);
+
+    // A password change re-encrypts the vault record only; attachments stay readable.
+    f.state.password = 'a different long password for files';
+    await f.page.evaluate(({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
+    await f.page.locator('#lock').click(); await locked(f.page);
+    await unlock(f.page, f.state.password); await settled(f.page);
+    assert.equal(await f.page.evaluate(async () => (await Auth.store.getFile(Auth.store.files.get('docs/doc.pdf').id)).length), pdf.length);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('an interrupted attachment download keeps what arrived and unreferenced bytes are swept on unlock', async () => {
+  const f = await fixture({ legacy: false });
+  for (let i = 0; i < 30; i++) f.remote.set(`img/${i}.png`, { sha: 'f' + i, content: '', bytes: Buffer.from([i, 0, 1]) });
+  f.state.failBlob = 'f20';
+  try {
+    await unlock(f.page); await settled(f.page);
+    assert.match(await f.page.locator('#status').textContent(), /Attachment download failed/);
+    const kept = await f.page.evaluate(() => Auth.store.files.size);
+    assert.ok(kept >= 10 && kept < 30, String(kept));
+    await f.page.evaluate(() => Auth.store.putFile(new Uint8Array([9, 9, 9])));
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => Auth.store.files.size), kept);
+    assert.equal((await storedFiles(f.page)).keys.length, kept);
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = false; f.state.failBlob = null;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => Auth.store.files.size), 30);
+    assert.equal((await storedFiles(f.page)).keys.length, 30);
+    assert.match(await f.page.locator('#status').textContent(), new RegExp(`${30 - kept} attachments downloaded`));
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

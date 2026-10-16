@@ -6,6 +6,7 @@ A personal, local-first Markdown notes app with wikilinks, backlinks, search and
 
 - Vault starts locked on every open or reload. Enter your password before any note titles, content, search results or backlinks appear.
 - Notes, filenames, sync metadata and the last-opened note are encrypted together on this device with **AES-256-GCM**. The encryption key is derived using **PBKDF2-SHA-256, 600,000 iterations**, with a random device salt and a fresh nonce for every save.
+- Attachments are encrypted one file per record with AES-256-GCM, using a random file key that is sealed inside the encrypted vault. Their names and paths are kept only in the encrypted vault. Saving a note never re-encrypts attachments, and a password change re-encrypts only the vault record.
 - Unlock keys and cloud sessions stay in memory. They are never saved in localStorage, IndexedDB or the service worker cache.
 - Vault locks after **one hour of inactivity**, including time in the background. It checks elapsed time when returning to a suspended tab. Click **Lock**, or **Settings → Sign out**, to lock immediately.
 - Locking saves pending edits as ciphertext, clears note text and credentials from the app, and cancels sync requests. A late response cannot reopen the vault.
@@ -21,6 +22,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
 - Import a folder or Obsidian vault as a new space, unchanged and in one commit
+- Attachments sync to every device for offline use; images show inline with `![[image.png]]`, `![[image.png|300]]` or `![](path/image.png)`, and other files download from a 📎 link
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
@@ -46,7 +48,7 @@ On a desktop browser, open the space menu → **Import folder…**, or drop a fo
 - Every file is added **unchanged** under a new top-level folder in your notes repo, in **one commit**, so that folder still opens as an Obsidian vault. This includes attachments such as images, PDFs and canvases.
 - Hidden files and folders (`.obsidian/`, `.trash/`, `.git/`, `.DS_Store`), `Thumbs.db` and `desktop.ini` are skipped. Files over 25 MB are skipped and listed. Imports over 500 MB ask for confirmation.
 - A space, folder in Main or folder in the repo with the same name blocks the import, so choose another name. Nothing is merged or overwritten.
-- Notes appear right away. Attachments are stored in GitHub but are not shown in Vault yet (see `docs/import-plan.md`).
+- Notes and attachments appear right away; the device that imports keeps its own copies, so it downloads nothing again.
 - GitHub limits how fast files can be created. Markdown and other text files are sent inline and don't count, but large numbers of images upload at about one per second, and Vault waits automatically when GitHub asks it to. If an import fails or is cancelled, **Retry** reuses the files that were already uploaded. Locking cancels an import.
 
 ## Deploy
@@ -103,7 +105,9 @@ A failed change keeps the existing encrypted vault. Changing a server password c
 
 Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. Settings lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
 
-If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note produces one GitHub commit; images and attachments are not supported yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
+If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note produces one GitHub commit.
+
+Attachments (every file that isn't Markdown, up to 25 MB, outside dot folders) are read-only in Vault. After notes sync, they download in the background, three at a time, and are kept encrypted on the device so they work offline. Changed attachments are replaced and deleted ones are removed. An interrupted download keeps what arrived and continues on the next sync. Attachments resolve like Obsidian: from the space's root, then relative to the note, then by file name. Images are shown inline. Other files are only ever downloaded, never opened inside Vault, so an imported HTML or SVG file cannot run in the app. A first sync on a new device downloads all attachments, so allow for the storage and data use. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
 
 ## Development and checks
 

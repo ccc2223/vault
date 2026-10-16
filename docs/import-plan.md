@@ -76,14 +76,14 @@ Locking or signing out aborts the import, and nothing is written locally. If the
   - a ref race retries on the new head;
   - locking mid-import writes nothing.
 
-## Phase 2: attachment sync and encrypted file store
+## Phase 2: attachment sync and encrypted file store (done)
 
 ### Storage (`secure-store.js`)
 
 - Bump the IndexedDB version to 3 and add a `files` object store, keyed by a random id. Ids are not paths or shas, so filenames don't leak.
 - Each record is `{iv, ciphertext}`, encrypted with AES-GCM and AAD `vault/file/v1:<id>`.
 - Files are encrypted with a random **file key**. That key is held inside the sealed vault payload, so a password change only re-wraps the vault blob and never re-encrypts hundreds of MB of attachments.
-- Metadata records live in the sealed payload: `{kind: 'file', path, sha, size, fileId}`. `isNote()` excludes them, along with every other note-only code path (list, search, backlinks, rename, quick switcher).
+- Metadata lives in its own `files` list in the sealed payload (`{path, sha, size, id}`), next to `notes` and the file key. Because it is separate from notes, list, search, backlinks, rename and the quick switcher need no changes.
 - Writing file bytes and the matching metadata is two-phase: bytes first, then metadata. An orphan sweep on unlock deletes `files` records that no metadata refers to.
 - Locking clears the file key and revokes all blob URLs.
 
@@ -97,8 +97,10 @@ Locking or signing out aborts the import, and nothing is written locally. If the
 ### Rendering
 
 - `![[img.png]]`, `![[img.png|300]]` and `![](relative/img.png)` resolve within the current space using Obsidian's order: exact path from the vault root, then path relative to the note, then shortest path by basename.
-- Resolved images get `data-file` attributes. After DOMPurify runs, they receive `blob:` URLs, cached per render and revoked on re-render or lock.
+- Resolved images get `data-file` attributes. After DOMPurify runs, they receive URLs: typed `blob:` URLs for raster images and `data:` URLs for SVG, because a `blob:` URL shares the app's origin. URLs are cached by file id (at most 100) and revoked on lock.
+- Other attachments (and `[[file.pdf]]` links) show a 📎 chip that downloads the file as `application/octet-stream`. Nothing is opened in the app's origin.
 - Missing attachments show a placeholder chip.
+- An import stores its attachments from the picked files, after checking that their sha still matches what was uploaded, so the importing device downloads nothing again.
 
 ## Phase 3: Obsidian rendering
 
