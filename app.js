@@ -393,13 +393,20 @@ async function gh(path, opts = {}) {
   }
   const headers = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + c.session };
   if (opts.body) headers['Content-Type'] = 'application/json';
-  const r = await fetch(c.url + '/gh' + path, { ...opts, headers, signal: Auth.controller.signal, cache: 'no-store' });
+  const signal = opts.signal ? AbortSignal.any([Auth.controller.signal, opts.signal]) : Auth.controller.signal;
+  const r = await fetch(c.url + '/gh' + path, { ...opts, headers, signal, cache: 'no-store' });
   Auth.ensure(epoch);
   const result = await r.json();
   Auth.ensure(epoch);
   if (!r.ok) {
     if (r.status === 401) { Auth.session = null; throw new Error('Sync session expired. Sign in again in Settings.'); }
-    throw new Error(r.status + (result.message ? ' ' + result.message : ''));
+    // GitHub signals rate limits with 403/429 and either Retry-After or an exhausted quota and its reset time.
+    const exhausted = r.headers.get('X-RateLimit-Remaining') === '0';
+    const reset = exhausted ? Number(r.headers.get('X-RateLimit-Reset')) * 1000 - Date.now() : 0;
+    throw Object.assign(new Error(r.status + (result.message ? ' ' + result.message : '')), {
+      status: r.status, limited: (r.status === 403 || r.status === 429) && (r.headers.has('Retry-After') || exhausted || /rate limit/i.test(result.message)),
+      wait: Number(r.headers.get('Retry-After')) * 1000 || Math.max(0, reset) || 0
+    });
   }
   return result;
 }
@@ -597,6 +604,248 @@ $('#sp-new').onsubmit = async e => {
   catch (error) { if (Auth.active) $('#sp-err').textContent = error.message; }
 };
 
+/* ---------- import a folder as a space ---------- */
+// A picked or dropped folder (such as an Obsidian vault) becomes a new space. Files reach GitHub byte for byte
+// in one commit: text goes inline in tree requests, other files as blobs. See docs/import-plan.md.
+const IMPORT_MAX = 25 * 1024 * 1024, IMPORT_WARN = 500 * 1024 * 1024;
+const JUNK = new Set(['thumbs.db', 'desktop.ini']);
+const TEXT_EXT = /\.(md|txt|canvas|json|css|js|csv|svg|html?|xml|ya?ml|base)$/i;
+const utf8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+let importJob = null;   // {root, files, skipped, hidden, size, done: Map(path -> {sha, text?}), ctrl, running}
+
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+async function gitSha(bytes) {
+  const head = new TextEncoder().encode(`blob ${bytes.length}\0`), all = new Uint8Array(head.length + bytes.length);
+  all.set(head); all.set(bytes, head.length);
+  return hex(await crypto.subtle.digest('SHA-1', all));
+}
+function bytesB64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+// Exact text for valid UTF-8 without NUL bytes; anything else is uploaded as a binary blob.
+function asText(bytes) { if (bytes.includes(0)) return null; try { return utf8.decode(bytes); } catch { return null; } }
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => { clearTimeout(t); reject(new Error('Import cancelled.')); }, { once: true });
+  });
+}
+const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
+
+// entries: [{path: 'Root/sub/file.md', file}] relative to the picked folder's parent.
+function scanImport(entries) {
+  const root = entries[0]?.path.split('/')[0] || '';
+  const files = [], skipped = [], hidden = new Set();
+  let size = 0;
+  for (const { path, file } of entries) {
+    const segs = path.split('/').slice(1), rel = segs.join('/');
+    const dot = segs.findIndex(s => s.startsWith('.'));
+    if (dot >= 0) { hidden.add(segs.slice(0, dot + 1).join('/')); continue; }
+    if (!rel || !file) continue;
+    if (JUNK.has(segs.at(-1).toLowerCase())) { hidden.add(rel); continue; }
+    if (file.size > IMPORT_MAX) { skipped.push(rel + ' (' + mb(file.size) + ')'); continue; }
+    files.push({ path: rel, file }); size += file.size;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { root, files, skipped, hidden: [...hidden].sort(), size };
+}
+// Walk a dropped folder. Hidden folders such as .git are recorded but never read.
+async function readDropped(entry, prefix, out) {
+  if (entry.isFile) { out.push({ path: prefix + entry.name, file: await new Promise((res, rej) => entry.file(res, rej)) }); return; }
+  if (prefix && entry.name.startsWith('.')) { out.push({ path: prefix + entry.name + '/', file: null }); return; }
+  const reader = entry.createReader();
+  for (let batch; (batch = await new Promise((res, rej) => reader.readEntries(res, rej))).length;) {
+    for (const child of batch) await readDropped(child, prefix + entry.name + '/', out);
+  }
+}
+function importFolder(name) {
+  const folder = name.trim().replace(/[\\/<>:"|?*]/g, '').replace(/^[.\s]+/, '').trim(), key = folder.toLowerCase();
+  if (!folder) throw new Error('Enter a space name.');
+  if (activeSpaces().some(s => s.folder.toLowerCase() === key) || [...notes.values()].some(n => !n.deleted && topFolder(n.path)?.toLowerCase() === key)) {
+    throw new Error(`A space or folder named "${folder}" already exists. Choose another name.`);
+  }
+  return folder;
+}
+function importProgress(text) { if (Auth.active) $('#imp-status').textContent = text; }
+// Retry GitHub rate limits (common for many attachment uploads) instead of failing the import.
+async function ghPatient(path, opts) {
+  for (let attempt = 0, delay = 60000; ; attempt++, delay = Math.min(delay * 2, 900000)) {
+    try { return await gh(path, opts); }
+    catch (error) {
+      if (!error.limited || attempt >= 8) throw error;
+      const until = Date.now() + (error.wait || delay);
+      while (Date.now() < until) {
+        importProgress(`Waiting for GitHub's rate limit… resuming in ${Math.ceil((until - Date.now()) / 1000)} s`);
+        await sleep(Math.min(1000, until - Date.now()), opts.signal);
+      }
+    }
+  }
+}
+
+function openImport(entries) {
+  Auth.ensure();
+  if (importJob?.running) { if (!$('#dlg-import').open) $('#dlg-import').showModal(); return; }
+  const scan = scanImport(entries);
+  importJob = { ...scan, done: new Map(), ctrl: null, running: false };
+  const notesN = scan.files.filter(f => /\.md$/i.test(f.path)).length, others = scan.files.length - notesN;
+  const binaries = scan.files.filter(f => !TEXT_EXT.test(f.path)).length;
+  $('#imp-name').value = scan.root.replace(/^[.\s]+/, '');
+  $('#imp-sum').textContent = scan.files.length
+    ? `${notesN} note${notesN === 1 ? '' : 's'}, ${others} attachment${others === 1 ? '' : 's'} (${mb(scan.size)}).` +
+      (binaries > 60 ? ` GitHub limits uploads, so attachments take about ${Math.ceil(binaries / 70)} minutes.` : '')
+    : 'This folder has no files to import.';
+  const skips = [...scan.hidden.map(p => p + ' (hidden)'), ...scan.skipped.map(p => p + ' — over 25 MB')];
+  $('#imp-skip').hidden = !skips.length;
+  $('#imp-skip summary').textContent = `Skipped ${skips.length} item${skips.length === 1 ? '' : 's'}`;
+  $('#imp-skip-list').innerHTML = skips.map(s => `<li>${esc(s)}</li>`).join('');
+  $('#imp-status').textContent = ''; $('#imp-go').textContent = 'Import';
+  $('#imp-err').textContent = getCfg() ? '' : 'Sign in to sync in Settings before importing.';
+  $('#imp-go').disabled = !scan.files.length;
+  $('#dlg-spaces').close();
+  if (!$('#dlg-import').open) $('#dlg-import').showModal();
+}
+
+async function runImport() {
+  const epoch = Auth.ensure(), job = importJob;
+  if (!job || job.running) return;
+  const name = $('#imp-name').value.trim(), folder = importFolder(name);
+  if (!getCfg()) throw new Error('Sign in to sync in Settings before importing.');
+  if (job.size > IMPORT_WARN && !confirm(`This import is ${mb(job.size)}. Every device downloads it after syncing. Continue?`)) return;
+  job.running = true; job.ctrl = new AbortController();
+  const signal = job.ctrl.signal;
+  try { await uploadImport(epoch, job, folder, name, signal); }
+  catch (error) {
+    // Workers deployed before imports existed refuse the Git Data routes.
+    if (error.status === 403 && /Not allowed/.test(error.message)) throw new Error('Your sync server needs an update to import folders. Redeploy worker.js from this version of Vault.');
+    throw error;
+  } finally { job.running = false; }
+}
+async function uploadImport(epoch, job, folder, name, signal) {
+  // 1. Read every file; text is kept for inline tree entries, everything else is uploaded as a blob.
+  const todo = job.files.filter(f => !job.done.has(f.path));
+  let read = job.files.length - todo.length;
+  await pool(todo, 3, async f => {
+    const bytes = new Uint8Array(await f.file.arrayBuffer());
+    Auth.ensure(epoch); if (signal.aborted) throw new Error('Import cancelled.');
+    const text = asText(bytes);
+    const sha = text == null
+      ? (await ghPatient('/git/blobs', { method: 'POST', body: JSON.stringify({ content: bytesB64(bytes), encoding: 'base64' }), signal })).sha
+      : await gitSha(bytes);
+    job.done.set(f.path, { sha, text, mtime: f.file.lastModified || Date.now() });
+    importProgress(`Reading and uploading files ${++read}/${job.files.length}…`);
+  });
+  // 2. Build the space's folder as a standalone tree, a chunk at a time.
+  let folderTree = null, chunk = [], size = 0, built = 0;
+  const flushTree = async () => {
+    if (!chunk.length) return;
+    importProgress(`Building folder ${built += chunk.length}/${job.files.length}…`);
+    const body = { tree: chunk }; if (folderTree) body.base_tree = folderTree;
+    folderTree = (await ghPatient('/git/trees', { method: 'POST', body: JSON.stringify(body), signal })).sha;
+    chunk = []; size = 0;
+  };
+  for (const f of job.files) {
+    const d = job.done.get(f.path);
+    chunk.push(d.text == null ? { path: f.path, mode: '100644', type: 'blob', sha: d.sha } : { path: f.path, mode: '100644', type: 'blob', content: d.text });
+    size += d.text?.length || 100;
+    if (chunk.length >= 1000 || size >= 2000000) await flushTree();
+  }
+  await flushTree();
+  // 3. Commit it with the updated space list. Holding the sync slot keeps a background sync from pushing in between,
+  //    and from deleting the seeded notes before its next tree read.
+  while (syncing === epoch) await sleep(100, signal);
+  Auth.ensure(epoch); syncing = epoch;
+  try {
+    importProgress('Committing…');
+    const spaces = await commitImport(job, folder, name, folderTree, signal);
+    // 4. Seed notes and the space list with their GitHub shas, so the next sync has nothing to download.
+    for (const f of job.files) {
+      const d = job.done.get(f.path), p = folder + '/' + f.path;
+      if (!/\.md$/i.test(p) || d.text == null || notes.has(p)) continue;
+      notes.set(p, { path: p, content: d.text, mtime: d.mtime, sha: d.sha, dirty: false });
+    }
+    const sha = await gitSha(new TextEncoder().encode(spaces)), l = notes.get(SPACES);
+    if (!l || !l.dirty || l.deleted) notes.set(SPACES, { path: SPACES, content: spaces, mtime: Date.now(), sha, dirty: false });
+    else { l.content = mergeSpaces(l.content, spaces); l.sha = sha; l.dirty = l.content !== spaces; }
+    importProgress('Saving notes…');
+    await DB.replace();
+  } finally { if (syncing === epoch) syncing = null; }
+  importJob = null;
+  $('#dlg-import').close();
+  rebuildIndex(); await switchSpace(folder);
+  setStatus(`Imported ${job.files.length} file${job.files.length === 1 ? '' : 's'} into "${name}"`);
+  scheduleSync(0);
+}
+async function commitImport(job, folder, name, folderTree, signal) {
+  const branch = getCfg().branch || 'main', key = folder.toLowerCase();
+  const notesN = job.files.filter(f => /\.md$/i.test(f.path)).length;
+  const message = `Import "${name}" (${notesN} note${notesN === 1 ? '' : 's'}, ${job.files.length - notesN} attachment${job.files.length - notesN === 1 ? '' : 's'})`;
+  for (let attempt = 1; ; attempt++) {
+    const head = (await gh('/git/ref/heads/' + encPath(branch), { signal })).object.sha;
+    const commit = await gh('/git/commits/' + head, { signal });
+    const top = await gh('/git/trees/' + commit.tree.sha, { signal });
+    let remote = '';
+    try { remote = b64d((await gh('/contents/' + encPath(SPACES) + '?ref=' + head, { signal })).content); }
+    catch (error) { if (error.status !== 404) throw error; }
+    const existing = top.tree.find(t => t.path.split('/')[0].toLowerCase() === key);
+    if (existing) {
+      // Trees are content-addressed: an identical folder means an earlier attempt landed but its response was lost.
+      if (existing.type === 'tree' && existing.sha === folderTree && parseSpaces(remote).some(s => s.folder === folder && !s.removed)) return remote;
+      throw new Error(`"${folder}" already exists in your notes repo. Choose another name.`);
+    }
+    const spaces = spacesJSON([...parseSpaces(remote).filter(s => s.folder.toLowerCase() !== key), { folder, name, updated: Date.now() }]);
+    const tree = await gh('/git/trees', { method: 'POST', signal, body: JSON.stringify({ base_tree: commit.tree.sha, tree: [
+      { path: folder, mode: '040000', type: 'tree', sha: folderTree },
+      { path: SPACES, mode: '100644', type: 'blob', content: spaces }] }) });
+    const made = await gh('/git/commits', { method: 'POST', signal, body: JSON.stringify({ message, tree: tree.sha, parents: [head] }) });
+    try {
+      await gh('/git/refs/heads/' + encPath(branch), { method: 'PATCH', signal, body: JSON.stringify({ sha: made.sha, force: false }) });
+      return spaces;
+    } catch (error) {
+      // Another device pushed meanwhile: rebuild only the top-level tree on the new head.
+      if (error.status !== 422 || attempt >= 3) throw error;
+    }
+  }
+}
+
+if ('webkitdirectory' in document.createElement('input')) $('#sp-import').hidden = false;
+$('#sp-import').onclick = () => { $('#imp-pick').value = ''; $('#imp-pick').click(); };
+$('#imp-pick').onchange = () => {
+  const files = [...$('#imp-pick').files];
+  $('#imp-pick').value = '';
+  if (files.length) openImport(files.map(file => ({ path: file.webkitRelativePath || file.name, file })));
+};
+$('#imp-go').onclick = async () => {
+  $('#imp-err').textContent = ''; $('#imp-go').disabled = true;
+  try { await runImport(); }
+  catch (error) {
+    if (!Auth.active) return;
+    $('#imp-err').textContent = error.message; $('#imp-status').textContent = '';
+    $('#imp-go').textContent = 'Retry';
+  } finally { $('#imp-go').disabled = false; }
+};
+$('#imp-cancel').onclick = () => {
+  if (importJob?.running) importJob.ctrl.abort(new Error('Import cancelled.'));
+  else { importJob = null; $('#dlg-import').close(); }
+};
+$('#dlg-import').addEventListener('cancel', e => { if (importJob?.running) e.preventDefault(); else importJob = null; });
+document.addEventListener('dragover', e => {
+  if (Auth.active && e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+});
+document.addEventListener('drop', async e => {
+  if (!Auth.active || !e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  // Entries must be taken during the event; they are read afterwards.
+  const items = [...e.dataTransfer.items].map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (items.length !== 1 || !items[0].isDirectory) { setStatus('Drop a single folder to import it as a space.', true); return; }
+  const epoch = Auth.epoch;
+  try {
+    const out = []; await readDropped(items[0], '', out);
+    if (epoch === Auth.epoch) openImport(out);
+  } catch (error) { if (Auth.active) setStatus('Could not read the dropped folder: ' + error.message, true); }
+});
+
 /* settings dialog */
 $('#cfg').onclick = () => {
   Auth.ensure();
@@ -678,6 +927,7 @@ const App = {
   snapshot() { return { notes: structuredClone([...notes.values()]), last: structuredClone(Auth.store.last) }; },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT); clearTimeout(rpT);
+    importJob?.ctrl?.abort(); importJob = null;
     notes.clear(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     $('#ta').value = ''; $('#pv').replaceChildren(); $('#list').replaceChildren();

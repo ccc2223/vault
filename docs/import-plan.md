@@ -19,7 +19,7 @@ Import a folder from disk, such as an Obsidian vault, as a new **space**. Files 
 | Attachment download | Eager: notes first, then attachments in the background, so everything works offline afterwards. |
 | Rendering | Inline images, `![[Note]]` note embeds, `[[Note#Heading]]` links, hidden frontmatter. |
 
-## Phase 1: Worker and single-commit import
+## Phase 1: Worker and single-commit import (done)
 
 ### Worker (`worker.js`)
 

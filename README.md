@@ -20,6 +20,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
+- Import a folder or Obsidian vault as a new space, unchanged and in one commit
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
@@ -37,6 +38,16 @@ Spaces are separate sets of notes, like Obsidian vaults. Switch, create, rename 
 - You can open any space's folder as its own Obsidian vault.
 
 No Worker or Cloudflare changes are needed. A device still running an older Vault shows other spaces' notes as ordinary folders until it updates.
+
+## Import a folder or Obsidian vault
+
+On a desktop browser, open the space menu → **Import folder…**, or drop a folder onto the window. The folder becomes a new space with the same name; you can change the name before importing. Importing needs a signed-in, online device and the current `worker.js` (redeploy older Workers first).
+
+- Every file is added **unchanged** under a new top-level folder in your notes repo, in **one commit**, so that folder still opens as an Obsidian vault. This includes attachments such as images, PDFs and canvases.
+- Hidden files and folders (`.obsidian/`, `.trash/`, `.git/`, `.DS_Store`), `Thumbs.db` and `desktop.ini` are skipped. Files over 25 MB are skipped and listed. Imports over 500 MB ask for confirmation.
+- A space, folder in Main or folder in the repo with the same name blocks the import, so choose another name. Nothing is merged or overwritten.
+- Notes appear right away. Attachments are stored in GitHub but are not shown in Vault yet (see `docs/import-plan.md`).
+- GitHub limits how fast files can be created. Markdown and other text files are sent inline and don't count, but large numbers of images upload at about one per second, and Vault waits automatically when GitHub asks it to. If an import fails or is cancelled, **Retry** reuses the files that were already uploaded. Locking cancels an import.
 
 ## Deploy
 
@@ -66,11 +77,11 @@ Host this repository with GitHub Pages (`main`, root), or another static HTTPS h
 4. Save/deploy the settings. Open Vault and enter the Worker's HTTPS URL and password.
 5. Optionally set `SYNC_URL` in `app.js` so new devices only need the password. The URL is public; never put secrets in app source.
 
-The Worker keeps the GitHub token server-side. Sessions expire within **eight hours** and the app discards them on lock/close. Old `SESSION_DAYS` settings are ignored; remove that variable when upgrading. Updating to this Worker version invalidates old sessions. Changing `PASSWORD`, `GH_TOKEN` or `REPO` also invalidates sessions. Sessions are stateless: sign-out clears this browser's credentials, while a separately copied token remains valid until expiry or a server-secret change.
+The Worker keeps the GitHub token server-side. Besides reading and writing files, it allows the Git Data requests that folder imports use (creating blobs, trees and commits, and updating the branch), and it accepts only fast-forward branch updates, so a session can add commits but never rewrite history. Sessions expire within **eight hours** and the app discards them on lock/close. Old `SESSION_DAYS` settings are ignored; remove that variable when upgrading. Updating to this Worker version invalidates old sessions. Changing `PASSWORD`, `GH_TOKEN` or `REPO` also invalidates sessions. Sessions are stateless: sign-out clears this browser's credentials, while a separately copied token remains valid until expiry or a server-secret change.
 
 ## Upgrade existing devices
 
-1. Deploy the updated Worker code. Keep the current `GH_TOKEN`, `PASSWORD`, `REPO` and `ALLOWED_ORIGIN`; do not rotate passwords during initial migration.
+1. Deploy the updated Worker code. Folder imports need this version. Keep the current `GH_TOKEN`, `PASSWORD`, `REPO` and `ALLOWED_ORIGIN`; do not rotate passwords during initial migration.
 2. Close all older Vault tabs or installed windows on each device, then reopen/reload the app. A cached old app may require another reload after its service worker updates. If the upgrade says it is blocked, close older Vault windows. Do not clear browser data.
 3. Enter the existing Cloudflare password and Worker URL. Old saved tokens/sessions are discarded instead of reused.
 4. Migration encrypts **all existing notes and unsynced edits**, decrypts and verifies the ciphertext, then atomically commits it and clears the old plaintext records. No notes are displayed before migration succeeds.

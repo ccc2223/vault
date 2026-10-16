@@ -4,6 +4,7 @@ const { chromium } = require('playwright');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const gitSha = bytes => require('node:crypto').createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex');
 let server, browser, base;
 const password = 'test password with plenty of entropy';
 const url = 'https://sync.example';
@@ -29,11 +30,15 @@ after(async () => { await browser?.close(); await new Promise(resolve => server?
 async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
   const context = await browser.newContext({ serviceWorkers });
   const remote = new Map();
-  const state = { password, offline: false, calls: [], delay: null, started: false };
+  const state = { password, offline: false, calls: [], delay: null, started: false, head: 'c0', commits: 0, limitBlobs: 0, beforePatch: null };
+  // A small Git Data model for imports: blobs, trees (flat path maps), commits and the branch head.
+  const git = { blobs: new Map(), trees: new Map(), commits: new Map() };
+  const bump = () => { state.head = 'c' + ++state.commits; };
+  const treeId = m => 't' + gitSha(Buffer.from(JSON.stringify([...m].map(([p, v]) => [p, v.sha]).sort())));
   await context.route(url + '/**', async route => {
     const req = route.request(), pathname = new URL(req.url()).pathname;
     if (state.offline) { await route.abort(); return; }
-    const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', 'Content-Type': 'application/json' };
+    const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, PATCH, OPTIONS', 'Access-Control-Expose-Headers': 'Retry-After', 'Content-Type': 'application/json' };
     if (req.method() === 'OPTIONS') { await route.fulfill({ status: 204, headers }); return; }
     state.calls.push({ pathname, method: req.method() });
     let body = {}, status = 200;
@@ -42,16 +47,60 @@ async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
       else { const exp = Date.now() + 90 * 86400000; body = { session: exp + '.fake-session', exp }; }
     } else if (pathname.startsWith('/gh/git/trees/')) {
       if (state.delay) { state.started = true; await state.delay; }
-      body = { tree: [...remote].map(([name, n]) => ({ path: name, sha: n.sha, type: 'blob' })) };
+      if (new URL(req.url()).searchParams.has('recursive')) body = { tree: [...remote].map(([name, n]) => ({ path: name, sha: n.sha, type: 'blob' })) };
+      else {
+        // Top level only, with content-addressed folder ids like GitHub's.
+        const top = new Map();
+        for (const [name, n] of remote) {
+          const [first, ...rest] = name.split('/');
+          if (!rest.length) top.set(first, { path: first, type: 'blob', sha: n.sha });
+          else (top.get(first)?.files || top.set(first, { path: first, type: 'tree', files: new Map() }).get(first).files).set(rest.join('/'), n);
+        }
+        body = { tree: [...top.values()].map(e => e.files ? { path: e.path, type: 'tree', sha: treeId(e.files) } : e) };
+      }
     } else if (pathname.startsWith('/gh/git/blobs/')) {
       const sha = pathname.split('/').pop();
       const note = [...remote.values()].find(n => n.sha === sha);
       if (state.failBlob === sha) { status = 500; body = { message: 'Upstream error' }; }
-      else body = { content: Buffer.from(note?.content || '').toString('base64') };
+      else body = { content: (note?.bytes || Buffer.from(note?.content || '')).toString('base64') };
+    } else if (pathname.startsWith('/gh/contents/') && req.method() === 'GET') {
+      const note = remote.get(decodeURIComponent(pathname.slice('/gh/contents/'.length)));
+      if (note) body = { sha: note.sha, content: Buffer.from(note.content).toString('base64') };
+      else { status = 404; body = { message: 'Not Found' }; }
     } else if (pathname.startsWith('/gh/contents/')) {
       const name = decodeURIComponent(pathname.slice('/gh/contents/'.length));
       if (req.method() === 'DELETE') remote.delete(name);
       else { const n = { sha: 'hash-' + Math.random(), content: Buffer.from(req.postDataJSON().content, 'base64').toString() }; remote.set(name, n); body = { content: { sha: n.sha } }; }
+      bump();
+    } else if (pathname.startsWith('/gh/git/ref/heads/')) {
+      body = { object: { sha: state.head } };
+    } else if (pathname.startsWith('/gh/git/commits/')) {
+      body = { sha: state.head, tree: { sha: 'head-tree:' + state.head } };
+    } else if (pathname === '/gh/git/blobs' && req.method() === 'POST') {
+      if (state.limitBlobs > 0) { state.limitBlobs--; await route.fulfill({ status: 403, headers: { ...headers, 'Retry-After': '1' }, body: '{"message":"secondary rate limit"}' }); return; }
+      const bytes = Buffer.from(req.postDataJSON().content, 'base64'), sha = gitSha(bytes);
+      git.blobs.set(sha, bytes); body = { sha };
+    } else if (pathname === '/gh/git/trees' && req.method() === 'POST') {
+      const { base_tree, tree } = req.postDataJSON();
+      const out = !base_tree ? new Map() : base_tree.startsWith('head-tree:')
+        ? new Map([...remote].map(([p, n]) => [p, { sha: n.sha, bytes: n.bytes || Buffer.from(n.content) }])) : new Map(git.trees.get(base_tree));
+      for (const e of tree) {
+        if (e.type === 'tree') for (const [p, v] of git.trees.get(e.sha)) out.set(e.path + '/' + p, v);
+        else { const bytes = e.content != null ? Buffer.from(e.content, 'utf8') : git.blobs.get(e.sha); out.set(e.path, { sha: gitSha(bytes), bytes }); }
+      }
+      const sha = treeId(out); git.trees.set(sha, out); body = { sha };
+    } else if (pathname === '/gh/git/commits' && req.method() === 'POST') {
+      const sha = 'k' + git.commits.size; git.commits.set(sha, req.postDataJSON()); body = { sha };
+    } else if (pathname.startsWith('/gh/git/refs/heads/') && req.method() === 'PATCH') {
+      await state.beforePatch?.();
+      const { sha, force } = req.postDataJSON(), commit = git.commits.get(sha);
+      if (force || commit.parents[0] !== state.head) { status = 422; body = { message: 'Update is not a fast forward' }; }
+      else {
+        remote.clear();
+        for (const [p, v] of git.trees.get(commit.tree)) remote.set(p, { sha: v.sha, content: v.bytes.toString('utf8'), bytes: v.bytes });
+        state.head = sha; body = { object: { sha } };
+        if (state.losePatch) { state.losePatch = false; await route.abort(); return; }
+      }
     } else { status = 404; }
     await route.fulfill({ status, headers, body: JSON.stringify(body) }).catch(() => {});
   });
@@ -568,6 +617,132 @@ test('space changes from two devices merge instead of creating conflict copies',
     assert.equal(await f.page.locator('#space-name').textContent(), 'Main');
     assert.equal(await f.page.evaluate(() => live().some(n => n.path === 'Work/Home.md')), true);
     assert.deepEqual(await f.page.evaluate(() => activeSpaces().map(s => s.folder).sort()), ['', 'Journal']);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('importing a folder makes one commit with exact bytes, skips hidden and oversized files, and needs no re-download', async () => {
+  const f = await fixture();
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'vault-import-')), root = path.join(dir, 'My Vault');
+  const files = {
+    'Home.md': Buffer.from('﻿# Home\r\nSee [[Plan]] and ![[pic.png]]\r\n'),
+    'Ideas/Plan.md': Buffer.from('# Plan\n[[Home]] café'),
+    'Latin.md': Buffer.from([0x63, 0x61, 0x66, 0xe9]),
+    'attachments/pic.png': Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]),
+    'board.canvas': Buffer.from('{"nodes":[]}'),
+    '.obsidian/app.json': Buffer.from('{}'), '.DS_Store': Buffer.from([0]), 'Thumbs.db': Buffer.from([0])
+  };
+  for (const [name, bytes] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); fs.writeFileSync(path.join(root, name), bytes); }
+  fs.closeSync(fs.openSync(path.join(root, 'big.bin'), 'w')); fs.truncateSync(path.join(root, 'big.bin'), 25 * 1024 * 1024 + 1);
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.locator('#space').click();
+    await f.page.locator('#imp-pick').setInputFiles(root);
+    assert.equal(await f.page.locator('#dlg-import').isVisible(), true);
+    assert.equal(await f.page.locator('#imp-name').inputValue(), 'My Vault');
+    assert.match(await f.page.locator('#imp-sum').textContent(), /^3 notes, 2 attachments/);
+    assert.equal(await f.page.locator('#imp-skip summary').textContent(), 'Skipped 4 items');
+    assert.match(await f.page.locator('#imp-skip-list').textContent(), /\.obsidian \(hidden\).*big\.bin/);
+
+    f.state.limitBlobs = 1;
+    const before = f.state.calls.length;
+    await f.page.locator('#imp-go').click();
+    await f.page.waitForFunction(() => !document.getElementById('dlg-import').open && space === 'My Vault');
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    const after = f.state.calls.slice(before);
+    // Two binary blobs (one retried after a rate limit), a folder tree, the top-level tree, a commit and a fast-forward.
+    assert.deepEqual(after.filter(c => c.method !== 'GET').map(c => c.method + ' ' + c.pathname),
+      ['POST /gh/git/blobs', 'POST /gh/git/blobs', 'POST /gh/git/blobs', 'POST /gh/git/trees', 'POST /gh/git/trees', 'POST /gh/git/commits', 'PATCH /gh/git/refs/heads/main']);
+    // Only the note that isn't valid UTF-8 is downloaded again; every other note was seeded with its GitHub sha.
+    assert.deepEqual(after.filter(c => c.pathname.startsWith('/gh/git/blobs/')).map(c => c.pathname), ['/gh/git/blobs/' + gitSha(files['Latin.md'])]);
+    for (const [name, bytes] of Object.entries(files)) {
+      if (name.startsWith('.') || name === 'Thumbs.db') assert.equal(f.remote.has('My Vault/' + name), false);
+      else assert.deepEqual(f.remote.get('My Vault/' + name).bytes, bytes, name);
+    }
+    assert.equal(f.remote.has('My Vault/big.bin'), false);
+    assert.deepEqual(JSON.parse(f.remote.get('.vault/spaces.json').content).spaces.map(s => s.name), ['My Vault']);
+    assert.equal(f.remote.has('Secret draft.md'), true);
+    assert.deepEqual((await listed(f.page)).sort(), ['My Vault/Home.md', 'My Vault/Ideas/Plan.md', 'My Vault/Latin.md']);
+    assert.equal(await f.page.evaluate(() => notes.get('My Vault/Home.md').content), files['Home.md'].toString());
+    assert.equal(await f.page.evaluate(() => [...notes.values()].some(n => n.dirty)), false);
+    await f.page.evaluate(() => openNote('My Vault/Ideas/Plan.md'));
+    await f.page.evaluate(() => setMode('view'));
+    assert.equal(await f.page.locator('#pv a.wikilink:not(.missing)').textContent(), 'Home');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('imports refuse existing names, retry when another device pushes first, and write nothing locally if locked', async () => {
+  const f = await fixture();
+  const start = (root, name) => f.page.evaluate(({ root, name }) => {
+    openImport([{ path: root + '/a.md', file: new File(['# A from ' + root], 'a.md') }, { path: root + '/img.png', file: new File([new Uint8Array([0, 1])], 'img.png') }]);
+    if (name) document.getElementById('imp-name').value = name;
+    document.getElementById('imp-go').click();
+  }, { root, name });
+  const error = () => f.page.waitForFunction(() => document.getElementById('imp-err').textContent).then(h => h.jsonValue());
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => createSpace('Work')); await settled(f.page);
+    await start('work');
+    assert.match(await error(), /A space or folder named "work" already exists/);
+    f.remote.set('Projects/x.md', { sha: 'x', content: 'remote only' });
+    await start('Projects');
+    assert.match(await error(), /"Projects" already exists in your notes repo/);
+    assert.equal(await f.page.locator('#imp-go').textContent(), 'Retry');
+
+    f.state.beforePatch = async () => { f.state.beforePatch = null; f.remote.set('Phone.md', { sha: 'p', content: 'from phone' }); f.state.head = 'phone'; };
+    // Retry reuses the uploaded blobs.
+    await f.page.locator('#imp-name').fill('Fresh');
+    await f.page.locator('#imp-go').click();
+    await f.page.waitForFunction(() => space === 'Fresh'); await settled(f.page);
+    assert.equal(f.remote.get('Fresh/a.md').content, '# A from Projects');
+    assert.equal(f.remote.has('Phone.md'), true);
+    assert.equal(f.remote.has('Fresh/img.png'), true);
+    assert.equal(f.state.calls.filter(c => c.method === 'PATCH').length, 2);
+    assert.equal(f.state.calls.filter(c => c.pathname === '/gh/git/blobs').length, 1);
+
+    // A branch update that lands but loses its response is recognised on retry instead of blocking the name.
+    f.state.losePatch = true;
+    await start('Lost');
+    assert.match(await error(), /Failed to fetch/);
+    await f.page.locator('#imp-go').click();
+    await f.page.waitForFunction(() => space === 'Lost'); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.get('Lost/a.md')?.content), '# A from Lost');
+    assert.equal(f.state.calls.filter(c => c.method === 'PATCH').length, 3);
+
+    // Locking while the branch update is in flight writes nothing locally; the commit arrives with the next sync.
+    f.state.beforePatch = async () => { f.state.beforePatch = null; await f.page.evaluate(() => Auth.lock()); };
+    await start('Late');
+    await locked(f.page);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => [...notes.keys()].some(p => p.startsWith('Late/'))), false);
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = false;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.get('Late/a.md')?.content), '# A from Late');
+    assert.equal(await f.page.evaluate(() => activeSpaces().some(s => s.folder === 'Late')), true);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('dropped folders are read in batches and hidden folders are never walked', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    const scanned = await f.page.evaluate(async () => {
+      const file = name => ({ isFile: true, name, file: cb => cb(new File([name], name)) });
+      let walkedHidden = false;
+      const dir = (name, batches) => ({ isFile: false, isDirectory: true, name, createReader() {
+        if (name === '.git') walkedHidden = true;
+        let i = 0; return { readEntries: cb => cb(batches[i++] || []) };
+      } });
+      const root = dir('Vault', [[file('a.md'), dir('.git', [[file('HEAD')]])], [dir('Sub', [[file('b.md')], [file('c.png')]])]]);
+      const out = []; await readDropped(root, '', out);
+      const scan = scanImport(out);
+      return { walkedHidden, root: scan.root, files: scan.files.map(x => x.path), hidden: scan.hidden };
+    });
+    assert.deepEqual(scanned, { walkedHidden: false, root: 'Vault', files: ['a.md', 'Sub/b.md', 'Sub/c.png'], hidden: ['.git'] });
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

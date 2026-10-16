@@ -49,8 +49,9 @@ export default {
     const okOrigin = allowed.includes(origin);
     const cors = okOrigin ? {
       'Access-Control-Allow-Origin': origin,
-      'Access-Control-Allow-Methods': 'GET, PUT, DELETE, POST, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, PUT, DELETE, POST, PATCH, OPTIONS',
       'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept',
+      'Access-Control-Expose-Headers': 'Retry-After, X-RateLimit-Remaining, X-RateLimit-Reset',
       'Access-Control-Max-Age': '86400',
       'Vary': 'Origin'
     } : { 'Vary': 'Origin' };
@@ -79,8 +80,21 @@ export default {
       if (!(await checkSession(env, auth))) return json({ message: 'Signed out' }, 401);
 
       const sub = url.pathname.slice(3); // e.g. /git/trees/main
-      const allowedPath = /^\/(git\/trees|git\/blobs|contents)\//.test(sub) && !/\.\.|%2e%2e/i.test(sub);
-      if (!allowedPath || !['GET', 'PUT', 'DELETE'].includes(req.method)) return json({ message: 'Not allowed' }, 403);
+      // Reads and per-file writes for sync; blobs, trees, commits and fast-forward ref updates for imports.
+      const routes = {
+        GET: /^\/(git\/trees|git\/blobs|git\/commits|git\/ref\/heads|contents)\//,
+        PUT: /^\/contents\//, DELETE: /^\/contents\//,
+        POST: /^\/git\/(blobs|trees|commits)$/,
+        PATCH: /^\/git\/refs\/heads\/[^/]/
+      };
+      if (!routes[req.method]?.test(sub) || /\.\.|%2e%2e/i.test(sub)) return json({ message: 'Not allowed' }, 403);
+      const body = req.method === 'GET' ? undefined : await req.text();
+      if (req.method === 'PATCH') {
+        // Branch updates must be fast-forwards: a session can add commits but never rewrite history.
+        let update;
+        try { update = JSON.parse(body); } catch { return json({ message: 'Bad request' }, 400); }
+        if (typeof update?.sha !== 'string' || update.force !== undefined && update.force !== false) return json({ message: 'Not allowed' }, 403);
+      }
 
       const headers = {
         Accept: 'application/vnd.github+json',
@@ -90,12 +104,12 @@ export default {
       };
       if (req.method !== 'GET') headers['Content-Type'] = 'application/json';
       const r = await fetch(API + '/repos/' + env.REPO + sub + url.search, {
-        method: req.method, headers, body: req.method === 'GET' ? undefined : await req.text()
+        method: req.method, headers, body
       });
-      return new Response(r.body, {
-        status: r.status,
-        headers: { ...cors, 'Content-Type': r.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' }
-      });
+      const out = { ...cors, 'Content-Type': r.headers.get('Content-Type') || 'application/json', 'Cache-Control': 'no-store' };
+      // Let the app wait out GitHub rate limits.
+      for (const name of ['Retry-After', 'X-RateLimit-Remaining', 'X-RateLimit-Reset']) if (r.headers.has(name)) out[name] = r.headers.get(name);
+      return new Response(r.body, { status: r.status, headers: out });
     }
 
     return json({ message: 'Not found' }, 404);

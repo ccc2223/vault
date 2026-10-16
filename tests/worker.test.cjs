@@ -62,3 +62,44 @@ test('Worker checks origins, validates passwords, and restricts authenticated pr
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Worker allows import routes, only fast-forward ref updates, and forwards rate-limit headers', async () => {
+  const w = await worker();
+  const { data } = await login();
+  const auth = { Authorization: 'Bearer ' + data.session, 'Content-Type': 'application/json' };
+  const originalFetch = globalThis.fetch;
+  const forwarded = [];
+  globalThis.fetch = async (input, options) => {
+    forwarded.push({ input, options });
+    return new Response('{}', { status: 403, headers: { 'Content-Type': 'application/json', 'Retry-After': '30', 'X-RateLimit-Remaining': '0', 'X-Other': 'hidden' } });
+  };
+  try {
+    for (const [path, method, body] of [
+      ['/gh/git/ref/heads/main', 'GET'], ['/gh/git/commits/abc', 'GET'],
+      ['/gh/git/blobs', 'POST', '{"content":"","encoding":"base64"}'], ['/gh/git/trees', 'POST', '{"tree":[]}'],
+      ['/gh/git/commits', 'POST', '{"tree":"t","parents":["p"]}'], ['/gh/git/refs/heads/main', 'PATCH', '{"sha":"abc"}'],
+      ['/gh/git/refs/heads/main', 'PATCH', '{"sha":"abc","force":false}']
+    ]) {
+      const response = await w.fetch(req(path, method, { headers: auth, body }), env);
+      assert.equal(response.status, 403, path);
+      assert.equal(response.headers.get('Retry-After'), '30');
+      assert.equal(response.headers.get('X-RateLimit-Remaining'), '0');
+      assert.equal(response.headers.get('X-Other'), null);
+      assert.match(response.headers.get('Access-Control-Expose-Headers'), /Retry-After/);
+    }
+    assert.equal(forwarded.length, 7);
+    assert.equal(forwarded[2].options.body, '{"content":"","encoding":"base64"}');
+    assert.equal(forwarded[5].input, 'https://api.github.com/repos/example/private/git/refs/heads/main');
+    forwarded.length = 0;
+    for (const [path, method, body] of [
+      ['/gh/git/refs/heads/main', 'PATCH', '{"sha":"abc","force":true}'], ['/gh/git/refs/heads/main', 'PATCH', '{"force":"yes"}'],
+      ['/gh/git/refs', 'POST', '{"ref":"refs/heads/x","sha":"abc"}'], ['/gh/git/refs/tags/v1', 'PATCH', '{"sha":"abc"}'],
+      ['/gh/git/refs/heads/main', 'DELETE'], ['/gh/git/blobs/abc', 'PUT', '{}'], ['/gh/git/trees/main', 'POST', '{}'],
+      ['/gh/git/tags', 'POST', '{}'], ['/gh/contents/a.md', 'POST', '{}'], ['/gh/git/ref/heads/../../x', 'GET']
+    ]) {
+      const response = await w.fetch(req(path, method, { headers: auth, body }), env);
+      assert.ok([400, 403].includes(response.status), method + ' ' + path);
+    }
+    assert.equal(forwarded.length, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});

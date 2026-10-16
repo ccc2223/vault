@@ -94,7 +94,9 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #unlock-form{max-width:420px;margin:5vh auto}
 #unlock-form label{display:block;margin:16px 0 5px}
 #unlock-form input{width:100%;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2)}
-#unlock-error,#change-error{color:var(--danger)}
+#unlock-error,#change-error,#imp-err{color:var(--danger)}
+#imp-skip{font-size:13px;color:var(--mute)}
+#imp-skip-list{max-height:30vh;overflow:auto;margin:6px 0;padding-left:20px;word-break:break-all}
 .hint{font-size:13px;color:var(--mute)}
 body[data-locked="true"] #lock-screen{display:block}
 body[data-locked="true"]>#side,body[data-locked="true"]>#main,body[data-locked="true"]>#back{display:none!important}
@@ -173,7 +175,19 @@ button:disabled{opacity:.6;cursor:wait}
   <div id="sp-list"></div>
   <form id="sp-new"><input id="sp-name" placeholder="New space name" autocomplete="off" aria-label="New space name"><button class="on">Create</button></form>
   <p id="sp-err" class="hint" role="alert"></p>
-  <div class="row"><button id="sp-close">Close</button></div>
+  <div class="row"><button id="sp-import" hidden title="Import a folder, such as an Obsidian vault, as a new space. You can also drop a folder onto the window.">Import folder…</button><button id="sp-close">Close</button></div>
+  <input id="imp-pick" type="file" webkitdirectory multiple hidden>
+</dialog>
+
+<dialog id="dlg-import">
+  <h3 style="margin:0">Import folder as a space</h3>
+  <p class="hint">Files, including attachments, are added unchanged to a new folder in your notes repo in one commit, so the folder stays a working Obsidian vault.</p>
+  <label for="imp-name">Space name</label><input id="imp-name" autocomplete="off">
+  <p id="imp-sum"></p>
+  <details id="imp-skip"><summary></summary><ul id="imp-skip-list"></ul></details>
+  <p id="imp-status" class="hint" role="status"></p>
+  <p id="imp-err" role="alert"></p>
+  <div class="row"><button id="imp-cancel">Cancel</button><button id="imp-go" class="on">Import</button></div>
 </dialog>
 
 <dialog id="dlg-qs">
