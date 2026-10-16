@@ -6,7 +6,7 @@
 //   PASSWORD        secret  the password you type in the app
 //   REPO            text    e.g. ccc2223/vault-files
 //   ALLOWED_ORIGIN  text    e.g. https://ccc2223.github.io   (comma-separate several)
-//   SESSION_DAYS    text    optional, default 90
+//   SESSION_HOURS   text    optional, default and maximum 8
 
 const API = 'https://api.github.com';
 const enc = new TextEncoder();
@@ -16,7 +16,7 @@ const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
 
 async function hmac(env, msg) {
   // Key depends on the token and password: changing either signs out every device.
-  const key = await crypto.subtle.importKey('raw', enc.encode(env.GH_TOKEN + '\n' + env.PASSWORD),
+  const key = await crypto.subtle.importKey('raw', enc.encode('vault-session-v3\n' + env.REPO + '\n' + env.GH_TOKEN + '\n' + env.PASSWORD),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return b64url(await crypto.subtle.sign('HMAC', key, enc.encode(msg)));
 }
@@ -30,14 +30,15 @@ async function safeEqual(a, b) {
 }
 
 async function makeSession(env) {
-  const days = Number(env.SESSION_DAYS) || 90;
-  const exp = Date.now() + days * 86400000;
+  const configured = Number(env.SESSION_HOURS);
+  const hours = configured > 0 ? Math.min(configured, 8) : 8;
+  const exp = Date.now() + hours * 3600000;
   return { session: exp + '.' + await hmac(env, String(exp)), exp };
 }
 
 async function checkSession(env, s) {
   const m = /^(\d+)\.([\w-]+)$/.exec(s || '');
-  if (!m || Number(m[1]) < Date.now()) return false;
+  if (!m || Number(m[1]) <= Date.now() || Number(m[1]) > Date.now() + 8 * 3600000) return false;
   return safeEqual(m[2], await hmac(env, m[1]));
 }
 
@@ -66,7 +67,7 @@ export default {
     if (url.pathname === '/login' && req.method === 'POST') {
       let body;
       try { body = await req.json(); } catch { return json({ message: 'Bad request' }, 400); }
-      if (!(await safeEqual(body && body.password, env.PASSWORD))) {
+      if (typeof body?.password !== 'string' || !(await safeEqual(body.password, env.PASSWORD))) {
         await new Promise(r => setTimeout(r, 1000));
         return json({ message: 'Wrong password' }, 401);
       }

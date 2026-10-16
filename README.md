@@ -1,57 +1,94 @@
-# Vault — a free, personal Obsidian-style notes app
+# Vault
 
-Local-first PWA. Notes are plain `.md` files, kept in your browser (IndexedDB) and synced to **your own private GitHub repo**. No server, no cost.
+A personal, local-first Markdown notes app with wikilinks, backlinks, search and private GitHub sync. The public app is hosted separately from your private notes repository.
+
+## Device privacy
+
+- Vault starts locked on every open or reload. Enter your password before any note titles, content, search results or backlinks appear.
+- Notes, filenames, sync metadata and the last-opened note are encrypted together on this device with **AES-256-GCM**. The encryption key is derived using **PBKDF2-SHA-256, 600,000 iterations**, with a random device salt and a fresh nonce for every save.
+- Unlock keys and cloud sessions stay in memory. They are never saved in localStorage, IndexedDB or the service worker cache.
+- Vault locks after **one hour of inactivity**, including time in the background. It checks elapsed time when returning to a suspended tab. Click **Lock**, or **Settings → Sign out**, to lock immediately.
+- Locking saves pending edits as ciphertext, clears note text and credentials from the app, and cancels sync requests. A late response cannot reopen the vault.
+- One tab per browser profile can edit at a time. Locking or signing out coordinates across open tabs.
+- Saved notes can be unlocked offline with the local password. A new browser needs a successful cloud password login before it can download notes.
+
+This protects device storage while Vault is locked. Your GitHub files remain ordinary Markdown in your private repository: **cloud notes are not end-to-end encrypted**. Browser extensions, compromised same-origin code, an unlocked device, and browser/password-manager features have their own access boundaries. Clearing browser data removes local copies, including unsynced edits. Choose a strong password; there is no password recovery for an unsynced encrypted copy.
 
 ## Features
-- Markdown editor with live preview (Edit / Split / View)
-- `[[Wikilinks]]` (also `[[Note|alias]]`), autocomplete when you type `[[`, click-to-create missing notes
-- Backlinks panel
-- Full-text search and quick switcher (Ctrl/Cmd+O)
-- Folders via `folder/name`
-- Works offline, installable on phone and desktop
-- Notes stay compatible with Obsidian: open the same repo as a vault
 
-## Shortcuts
-Ctrl/Cmd+O switcher · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift+F search · Alt+N new note
+- Markdown editor and live preview: Edit / Split / View
+- `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
+- Backlinks, full-text search, quick switcher and folders via `folder/name`
+- Offline operation and installable PWA on phone and desktop
+- Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
-## Deploy for free (about 5 minutes)
+Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift+F search · Alt+N new note
 
-**1. Create the app repo (public, hosts the app only)**
-1. On GitHub, create a repo named `vault-app`.
-2. Upload `index.html`, `manifest.webmanifest`, `icon.svg`, `sw.js`.
-3. Settings → Pages → Deploy from branch → `main` / root.
-4. Your app is live at `https://<you>.github.io/vault-app/`.
+## Deploy
 
-**2. Create the notes repo (private, holds your notes)**
-1. Create a **private** repo, e.g. `my-vault`, initialized with a README (so the branch exists).
-2. Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate.
-3. Limit it to `my-vault` only, permission **Contents: Read and write**.
+### App
 
-**3. Sync server (password sign-in, recommended)**
-`worker.js` is a free Cloudflare Worker that keeps the token server-side, so each device only needs a password.
-1. dash.cloudflare.com → Workers & Pages → Create → Worker → name it `vault-sync` → Deploy → Edit code → paste `worker.js` → Deploy.
-2. Worker → Settings → Variables and Secrets, add:
-   - `GH_TOKEN` (Secret): the fine-grained token
-   - `PASSWORD` (Secret): a long password
-   - `REPO` (Text): `you/my-vault`
-   - `ALLOWED_ORIGIN` (Text): `https://<you>.github.io`
-3. Optional: set `SYNC_URL` near the top of `index.html` to the Worker URL so new devices only ask for the password.
+Host this repository with GitHub Pages (`main`, root), or another static HTTPS host. Include `index.html`, `app.js`, `auth.js`, `secure-store.js`, `vendor/`, `manifest.webmanifest`, `icon.svg` and `sw.js`. There is no deployment build step; bundled libraries are committed. The app requires Web Crypto, IndexedDB and Web Locks in a current browser.
 
-**4. Connect**
-Open the app → ⚙ → Password → Worker URL and password → Save & sync. Sessions last 90 days; changing `PASSWORD` or `GH_TOKEN` signs out every device.
-(Direct mode is still available under ⚙ → Access token, which stores the token in that browser.)
+### Private notes repo
 
-Alternative hosts: Cloudflare Pages or Netlify drop-in work too, since it's just static files.
+1. Create a **private** repository, initialized with a README so `main` exists.
+2. Create a GitHub **fine-grained personal access token**, restricted to that repository, with **Contents: Read and write**. Expired tokens stop syncing.
 
-## Sync behaviour
-- Pull then push on load, on Ctrl/Cmd+S, ~15s after edits, and when you return to the tab.
-- If the same note changed in both places, your local version is kept and the remote one is saved as `Note (conflict YYYY-MM-DD).md`.
-- Renames and deletes propagate. Only `.md` files are synced; dotfolders such as `.obsidian` are ignored.
+### Cloudflare Worker
 
-## Notes and limits
-- Use a token scoped to a single private repo; anyone with access to your browser profile can read it.
-- Images and attachments are not supported yet.
-- The GitHub API allows about 5,000 requests/hour, plenty for personal use. Each changed note is one commit.
+1. Cloudflare → Workers & Pages → Create → **Start with Hello World** → name and deploy the Worker.
+2. Click **Edit code**, replace the starter code with this repository's `worker.js`, and deploy. The static-file upload flow does not deploy a Worker backend.
+3. Under **Settings → Variables and Secrets**, add:
 
-## Ideas for next steps
-Graph view, daily notes, tags pane, image paste (stored in the repo), end-to-end encryption before pushing.
+| Name | Type | Value |
+| --- | --- | --- |
+| `GH_TOKEN` | Secret | The GitHub fine-grained token |
+| `PASSWORD` | Secret | A long password of your choice |
+| `REPO` | Text | `ccc2223/vault-files` (or your private notes repo) |
+| `ALLOWED_ORIGIN` | Text | `https://ccc2223.github.io` (origin only, without `/vault/`) |
+| `SESSION_HOURS` | Text, optional | Default and maximum `8`; smaller positive values are allowed |
+
+4. Save/deploy the settings. Open Vault and enter the Worker's HTTPS URL and password.
+5. Optionally set `SYNC_URL` in `app.js` so new devices only need the password. The URL is public; never put secrets in app source.
+
+The Worker keeps the GitHub token server-side. Sessions expire within **eight hours** and the app discards them on lock/close. Old `SESSION_DAYS` settings are ignored; remove that variable when upgrading. Updating to this Worker version invalidates old sessions. Changing `PASSWORD`, `GH_TOKEN` or `REPO` also invalidates sessions. Sessions are stateless: sign-out clears this browser's credentials, while a separately copied token remains valid until expiry or a server-secret change.
+
+## Upgrade existing devices
+
+1. Deploy the updated Worker code. Keep the current `GH_TOKEN`, `PASSWORD`, `REPO` and `ALLOWED_ORIGIN`; do not rotate passwords during initial migration.
+2. Close all older Vault tabs or installed windows on each device, then reopen/reload the app. A cached old app may require another reload after its service worker updates. If the upgrade says it is blocked, close older Vault windows. Do not clear browser data.
+3. Enter the existing Cloudflare password and Worker URL. Old saved tokens/sessions are discarded instead of reused.
+4. Migration encrypts **all existing notes and unsynced edits**, decrypts and verifies the ciphertext, then atomically commits it and clears the old plaintext records. No notes are displayed before migration succeeds.
+5. If storage fails or the upgrade is interrupted, it keeps the old data or the fully committed encrypted vault. Retry; never delete browser data as a troubleshooting step before recovering unsynced edits.
+
+If saving fails during locking, notes disappear from the screen and sync credentials are cleared. Keep the tab open and use **Retry saving and lock**. The app retains the unsaved in-memory copy until persistence succeeds, so locking cannot finish or release its key until then.
+
+## Change the password
+
+1. First update `PASSWORD` in Cloudflare and deploy.
+2. On each previously used device, unlock with its **old local password**. Local unlocking still works even when the server rejects the old password.
+3. Open **Settings → Update local password**. Enter the old local password and the new Cloudflare password.
+4. Vault verifies the new cloud password and the old local password, saves pending edits, then verifies and atomically commits the re-encrypted notes.
+5. Future unlocks on that device use the new password. Repeat on every device with existing local data.
+
+A failed change keeps the existing encrypted vault. Changing a server password cannot remotely revoke an offline copy encrypted with an old password. If the old local password is lost, already-synced notes remain recoverable from GitHub; unsynced encrypted data cannot be recovered without it. The app never silently wipes notes on failed login or recovery.
+
+## Sync
+
+Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. Settings lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
+
+If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. Renames and deletes propagate. Each changed note produces one GitHub commit; images and attachments are not supported yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
+
+## Development and checks
+
+```sh
+npm ci
+npm run vendor
+npx playwright install chromium
+npm test
+```
+
+Browser regression tests use Chromium, real IndexedDB/Web Crypto, and a mock sync server. Set `CHROMIUM_PATH` to a system Chromium executable if needed. Tests cover authenticated migration, encrypted storage, offline reload, wrong passwords, sign-out, reload locking, one-hour inactivity, tab coordination, interrupted writes, late responses and password rotation. Worker tests cover session duration, old/tampered/expired sessions, revocation, origins and proxy restrictions. No real notes or credentials are used.
+
+When changing app assets, bump the cache version in `sw.js`; its atomic install caches only the public app shell. Vendored library versions and licenses are recorded in `package.json`, `package-lock.json` and `vendor/`.

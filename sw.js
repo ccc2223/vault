@@ -1,36 +1,24 @@
-const CACHE = 'vault-v2';
-const CORE = [
-  './', 'index.html', 'manifest.webmanifest', 'icon.svg',
-  'https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js'
-];
+// Cache only the public app shell. Notes and authentication responses never enter Cache Storage.
+const CACHE = 'vault-v3-secure-1';
+const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg',
+  'secure-store.js', 'auth.js', 'app.js', 'vendor/marked.min.js', 'vendor/purify.min.js'];
+const shellURLs = new Set(CORE.map(path => new URL(path, self.registration.scope).href));
 
-self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => Promise.all(CORE.map(u => c.add(u).catch(() => {})))));
-  self.skipWaiting();
+self.addEventListener('install', event => {
+  // A partial download must not replace a working offline installation.
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
 });
-
-self.addEventListener('activate', e => {
-  e.waitUntil(
-    caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys
+    .filter(key => key.startsWith('vault-') && key !== CACHE).map(key => caches.delete(key))))
+    .then(() => self.clients.claim()));
 });
-
-// Stale-while-revalidate for the app shell and CDN libs only; sync traffic is never cached.
-self.addEventListener('fetch', e => {
-  const req = e.request;
-  if (req.method !== 'GET') return;
-  const url = new URL(req.url);
-  if (url.origin !== self.location.origin && url.hostname !== 'cdnjs.cloudflare.com') return;
-  e.respondWith(
-    caches.open(CACHE).then(async cache => {
-      const hit = await cache.match(req, { ignoreSearch: true });
-      const net = fetch(req).then(res => {
-        if (res && res.ok) cache.put(req, res.clone());
-        return res;
-      }).catch(() => hit);
-      return hit || net;
-    })
-  );
+self.addEventListener('fetch', event => {
+  const request = event.request;
+  if (request.method !== 'GET' || !shellURLs.has(request.url)) return;
+  event.respondWith((async () => {
+    // Serve one complete version together; the service worker update swaps the shell atomically.
+    const cache = await caches.open(CACHE);
+    return await cache.match(request) || fetch(request);
+  })());
 });
