@@ -102,10 +102,10 @@ Locking or signing out aborts the import, and nothing is written locally. If the
 - Missing attachments show a placeholder chip.
 - An import stores its attachments from the picked files, after checking that their sha still matches what was uploaded, so the importing device downloads nothing again.
 
-## Phase 3: Obsidian rendering
+## Phase 3: Obsidian rendering (done)
 
 - **Frontmatter:** a leading `---` YAML block is hidden from the preview and shown as a collapsed "Properties" box. Search still indexes it.
-- **Heading links:** headings get slug ids. `[[Note#Heading]]` opens the note and scrolls to the heading, and `[[#Heading]]` scrolls within the current note. Backlinks ignore the anchor.
+- **Heading links:** headings get a `data-heading` key (not an `id`, which could clash with the app's own element ids). `[[Note#Heading]]` opens the note and scrolls to the heading, and `[[#Heading]]` scrolls within the current note. Backlinks ignore the anchor.
 - **Note embeds:** `![[Note]]` and `![[Note#Heading]]` render the target, or just that section, inline in a framed block. Depth is limited to 3, and cycles are rendered as links.
 
 ## Follow-ups (not planned yet)

@@ -862,3 +862,49 @@ test('an interrupted attachment download keeps what arrived and unreferenced byt
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('frontmatter shows as properties, heading links scroll, and note embeds render sections without cycles', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      await createNote('Plan', '---\ntags:\n  - work\n  - "q3"\nstatus: draft\n---\n# Plan\n\n## Goals & *plans*\nShip it\n\n### Detail\nsmall\n\n## Later\nnot now\n' + 'filler\n\n'.repeat(80) + '## End\nbye');
+      await createNote('Loop', 'Loop body ![[Index]]');
+      await createNote('Index', 'See [[Plan#Goals & plans]] and [[#Bottom]]\n\n![[Plan#Goals & plans]]\n\n![[Loop]]\n\n![[Plan#Nowhere]]\n\n## Bottom\nend');
+      setMode('view');
+    });
+    const view = await f.page.evaluate(() => ({
+      props: document.querySelector('#pv > .props')?.textContent,
+      embeds: [...document.querySelectorAll('#pv .embed')].map(e => e.querySelector('.embed-title').textContent + ' | ' + e.textContent.replace(/\s+/g, ' ').trim()),
+      links: [...document.querySelectorAll('#pv > p a.wikilink')].map(a => [a.textContent, a.dataset.heading || null])
+    }));
+    assert.equal(view.props, undefined);
+    assert.deepEqual(view.embeds, [
+      'Plan › Goals & plans | Plan › Goals & plansGoals & plans Ship it Detail small',
+      'Loop | LoopLoop body Index'
+    ]);
+    // The section embed stops at the next heading of its level; the nested Loop → Index embed shows a link instead of repeating.
+    assert.equal(await f.page.locator('#pv .embed .embed a.wikilink').count(), 0);
+    assert.deepEqual(view.links.slice(0, 3), [['Plan › Goals & plans', 'goals plans'], ['Bottom', 'bottom'], ['Plan › Nowhere', 'nowhere']]);
+
+    await f.page.evaluate(() => {
+      window.scrolled = [];
+      const original = Element.prototype.scrollIntoView;
+      Element.prototype.scrollIntoView = function (...args) { window.scrolled.push(this.dataset.heading); return original.apply(this, args); };
+    });
+    await f.page.locator('#pv > p a.wikilink', { hasText: 'Bottom' }).click();
+    await f.page.locator('#pv > p a.wikilink', { hasText: 'Goals' }).click();
+    await f.page.waitForFunction(() => cur === 'Plan.md');
+    assert.deepEqual(await f.page.evaluate(() => window.scrolled), ['bottom', 'goals plans']);
+    assert.equal(await f.page.evaluate(() => ta.value.slice(ta.selectionStart, ta.selectionStart + 18)), '## Goals & *plans*');
+    const plan = await f.page.evaluate(() => ({
+      props: [...document.querySelectorAll('#pv > .props tr')].map(r => r.textContent),
+      first: document.querySelector('#pv > :not(.props)').outerHTML,
+      search: (document.getElementById('q').value = 'status:', renderList(), [...document.querySelectorAll('#list .item[data-p]')].map(i => i.dataset.p))
+    }));
+    assert.deepEqual(plan.props, ['tagswork, q3', 'statusdraft']);
+    assert.equal(plan.first, '<h1 data-heading="plan">Plan</h1>');
+    assert.deepEqual(plan.search, ['Plan.md']);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

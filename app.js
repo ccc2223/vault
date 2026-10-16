@@ -94,26 +94,78 @@ function resolveFile(target, from) {
 const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
 const fileName = p => p.replace(/^.*\//, '');
 function fileLink(path) { return `<a class="att-link" data-file="${esc(path)}" title="Download">📎 ${esc(fileName(path))}</a>`; }
-// ![[file]], ![[file|300]] and ![[file|300x200]]. Embeds of notes stay links for now.
-function embedHTML(target, option) {
-  const p = resolveFile(target, cur);
+// Paths of the note being rendered and the notes it embeds; relative attachments resolve from the innermost.
+let rendering = [];
+// Heading keys ignore case, punctuation and formatting, so [[Note#Goals & plans]] finds "## Goals & *plans*".
+const headingKey = text => text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+function noteLink(target, heading, text) {
+  const ok = !target || resolve(target);
+  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}"${heading ? ` data-heading="${esc(headingKey(heading))}"` : ''}>${esc(text)}</a>`;
+}
+// A leading YAML block (Obsidian properties) is shown separately from the note's text.
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/;
+function splitFrontmatter(content) {
+  const m = FRONTMATTER.exec(content);
+  return m ? { yaml: m[1], body: content.slice(m[0].length) } : { yaml: null, body: content };
+}
+function propertiesHTML(yaml) {
+  const rows = [];
+  for (const line of yaml.split(/\r?\n/)) {
+    const key = /^([^\s#:-][^:]*):[ \t]*(.*)$/.exec(line), item = /^\s+-\s*(.*)$/.exec(line);
+    if (key) rows.push([key[1].trim(), key[2].trim() ? [key[2].trim()] : []]);
+    else if (item && rows.length) rows.at(-1)[1].push(item[1].trim());
+  }
+  if (!rows.length) return '';
+  return `<details class="props"><summary>Properties</summary><table>${rows.map(([k, v]) =>
+    `<tr><th>${esc(k)}</th><td>${esc(v.map(x => x.replace(/^(["'])(.*)\1$/, '$2')).join(', '))}</td></tr>`).join('')}</table></details>`;
+}
+// The part of a note under a heading, up to the next heading of the same or a higher level.
+function section(body, heading) {
+  const lines = body.split('\n'), key = headingKey(heading);
+  const start = lines.findIndex(l => /^#{1,6}\s/.test(l) && headingKey(l.replace(/^#+\s+/, '')) === key);
+  if (start < 0) return null;
+  const level = /^#+/.exec(lines[start])[0].length;
+  let end = start + 1;
+  while (end < lines.length && !(/^#{1,6}\s/.test(lines[end]) && /^#+/.exec(lines[end])[0].length <= level)) end++;
+  return lines.slice(start, end).join('\n');
+}
+function renderMarkdown(path, content) {
+  rendering.push(path);
+  try {
+    const { yaml, body } = splitFrontmatter(content);
+    return (yaml != null && rendering.length === 1 ? propertiesHTML(yaml) : '') + marked.parse(body);
+  } finally { rendering.pop(); }
+}
+// ![[file]], ![[file|300]] and ![[file|300x200]] for attachments; ![[Note]] and ![[Note#Heading]] embed notes.
+function embedHTML(target, option, heading) {
+  const p = resolveFile(target, rendering.at(-1));
   if (p && IMAGE.test(p)) {
     const size = /^(\d+)(?:x(\d+))?$/.exec(option);
     return `<img data-file="${esc(p)}" alt="${esc(size ? fileName(p) : option || fileName(p))}"` +
       (size ? ` width="${size[1]}"${size[2] ? ` height="${size[2]}"` : ''}` : '') + '>';
   }
   if (p) return fileLink(p);
-  if (/\.[a-z0-9]+$/i.test(target) && !/\.md$/i.test(target)) return `<span class="att-missing">${esc(fileName(target))}</span>`;
-  const ok = resolve(target);
-  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}">${esc(option || target)}</a>`;
+  const n = notes.get(resolve(target));
+  const title = option || (heading ? `${target} › ${heading}` : target);
+  if (!n) {
+    if (/\.[a-z0-9]+$/i.test(target) && !/\.md$/i.test(target)) return `<span class="att-missing">${esc(fileName(target))}</span>`;
+    return noteLink(target, heading, title);
+  }
+  // Embeds nest up to three deep; a note that embeds itself, directly or not, shows a link instead.
+  if (rendering.includes(n.path) || rendering.length >= 4) return noteLink(target, heading, title);
+  const body = splitFrontmatter(n.content).body, part = heading ? section(body, heading) : body;
+  if (part == null) return noteLink(target, heading, title);
+  return `<div class="embed"><div class="embed-title">${noteLink(target, heading, title)}</div>${renderMarkdown(n.path, part)}</div>`;
 }
 marked.use({
   gfm: true, breaks: true,
   renderer: {
+    // Headings carry a data key for [[Note#Heading]] links. Ids could clash with the app's own elements.
+    heading(text, level, raw) { return `<h${level} data-heading="${esc(headingKey(raw))}">${text}</h${level}>\n`; },
     // Relative image paths are attachments; they get their source from the encrypted store after rendering.
     image(href, title, text) {
       if (!href || /^[a-z][a-z0-9+.-]*:/i.test(href)) return false;
-      const p = resolveFile(href, cur);
+      const p = resolveFile(href, rendering.at(-1));
       return p ? `<img data-file="${esc(p)}" alt="${text}"${title ? ` title="${esc(title)}"` : ''}>` : `<span class="att-missing">${text || esc(href)}</span>`;
     }
   },
@@ -121,21 +173,24 @@ marked.use({
     name: 'embed', level: 'inline',
     start(src) { return src.indexOf('![['); },
     tokenizer(src) {
-      const m = /^!\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|([^\]]*))?\]\]/.exec(src);
-      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), option: (m[2] || '').trim() };
+      const m = /^!\[\[([^\]|#^]+)(?:#(?!\^)([^\]|]*)|#\^[^\]|]*)?(?:\|([^\]]*))?\]\]/.exec(src);
+      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), heading: (m[2] || '').trim(), option: (m[3] || '').trim() };
     },
-    renderer(t) { return embedHTML(t.target, t.option); }
+    renderer(t) { return embedHTML(t.target, t.option, t.heading); }
   }, {
     name: 'wikilink', level: 'inline',
     start(src) { return src.indexOf('[['); },
     tokenizer(src) {
-      const m = /^\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
-      if (m) return { type: 'wikilink', raw: m[0], target: m[1].trim(), text: (m[2] || m[1]).trim() };
+      // [[Note]], [[Note|text]], [[Note#Heading]] and [[#Heading]] in the same note.
+      const m = /^\[\[([^\]|#]*)(?:#(?!\^)([^\]|]*)|#\^[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
+      if (!m || !m[1].trim() && !m[2]?.trim()) return;
+      const target = m[1].trim(), heading = (m[2] || '').trim();
+      return { type: 'wikilink', raw: m[0], target, heading, text: (m[3] || (target && heading ? `${target} › ${heading}` : target || heading)).trim() };
     },
     renderer(t) {
       const ok = resolve(t.target);
-      if (!ok && !/\.md$/i.test(t.target)) { const f = resolveFile(t.target, cur); if (f) return fileLink(f); }
-      return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(t.target)}">${esc(t.text)}</a>`;
+      if (!ok && t.target && !/\.md$/i.test(t.target)) { const f = resolveFile(t.target, rendering.at(-1)); if (f) return fileLink(f); }
+      return noteLink(t.target, t.heading, t.text);
     }
   }]
 });
@@ -146,7 +201,8 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
 });
 function renderPreview() {
   const n = notes.get(cur);
-  $('#pv').innerHTML = n ? DOMPurify.sanitize(marked.parse(n.content)) : '';
+  rendering = [];
+  $('#pv').innerHTML = n ? DOMPurify.sanitize(renderMarkdown(n.path, n.content)) : '';
   const epoch = Auth.epoch;
   for (const img of $('#pv').querySelectorAll('img[data-file]')) {
     const f = Auth.store.files.get(img.dataset.file);
@@ -357,9 +413,21 @@ $('#pv').addEventListener('click', async e => {
   if (file) { e.preventDefault(); downloadFile(file.dataset.file).catch(error => setStatus('Could not open attachment: ' + error.message, true)); return; }
   const a = e.target.closest('a.wikilink'); if (!a) return;
   e.preventDefault();
-  const t = a.dataset.target, p = resolve(t);
-  if (p) await openNote(p); else await createNote(t);
+  const t = a.dataset.target, p = t ? resolve(t) : cur;
+  if (!p) { await createNote(t); return; }
+  if (p !== cur) await openNote(p);
+  if (a.dataset.heading) scrollToHeading(a.dataset.heading);
 });
+// Show a heading in the preview, and move the editor's cursor to it without focusing (no keyboard pops up on phones).
+function scrollToHeading(key) {
+  const h = [...$('#pv').querySelectorAll(':scope > [data-heading]')].find(h => h.dataset.heading === key);
+  h?.scrollIntoView({ block: 'start' });
+  const lines = ta.value.split('\n'), i = lines.findIndex(l => /^#{1,6}\s/.test(l) && headingKey(l.replace(/^#+\s+/, '')) === key);
+  if (i < 0) return;
+  const at = lines.slice(0, i).reduce((sum, l) => sum + l.length + 1, 0);
+  ta.setSelectionRange(at, at);
+  ta.scrollTop = ta.scrollHeight * i / lines.length;
+}
 $('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
 $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[data-p]'); if (i) openNote(i.dataset.p); });
 $('#q').addEventListener('input', renderList);

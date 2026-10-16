@@ -19,6 +19,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 
 - Markdown editor and live preview: Edit / Split / View
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
+- Obsidian-style `[[Note#Heading]]` and `[[#Heading]]` links, `![[Note]]` and `![[Note#Heading]]` embeds (nested up to three deep), and frontmatter shown as a collapsed **Properties** box
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
 - Import a folder or Obsidian vault as a new space, unchanged and in one commit
