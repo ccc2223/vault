@@ -468,3 +468,106 @@ test('first sync persists pulled notes in one encrypted write, and a failed pull
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+const spacesFile = spaces => JSON.stringify({ version: 1, spaces }, null, 2) + '\n';
+const listed = page => page.locator('#list .item[data-p]').evaluateAll(items => items.map(i => i.dataset.p));
+
+test('spaces keep notes, links and search separate, store notes in their folder, and reopen where you were', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.locator('#space-name').textContent(), 'Main');
+    await f.page.locator('#space').click();
+    await f.page.locator('#sp-name').fill('Work');
+    await f.page.locator('#sp-new button').click();
+    await settled(f.page);
+    assert.equal(await f.page.locator('#space-name').textContent(), 'Work');
+    assert.equal(await f.page.evaluate(() => cur), 'Work/Home.md');
+    await f.page.evaluate(() => createNote('Projects/Plan', '[[Home]] and [[Secret draft]]'));
+    await f.page.evaluate(() => setMode('view'));
+    assert.equal(await f.page.locator('#pv a.wikilink:not(.missing)').textContent(), 'Home');
+    assert.equal(await f.page.locator('#pv a.wikilink.missing').textContent(), 'Secret draft');
+    assert.deepEqual((await listed(f.page)).sort(), ['Work/Home.md', 'Work/Projects/Plan.md']);
+    assert.equal(await f.page.locator('#list .item .f').textContent(), 'Projects');
+    await f.page.locator('#q').fill('device-only');
+    assert.deepEqual(await listed(f.page), []);
+    await f.page.locator('#q').fill('');
+
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(f.remote.has('Work/Projects/Plan.md'), true);
+    assert.equal(JSON.parse(f.remote.get('.vault/spaces.json').content).spaces.some(s => s.folder === 'Work' && s.name === 'Work'), true);
+
+    await f.page.evaluate(() => switchSpace(''));
+    assert.deepEqual(await listed(f.page), ['Secret draft.md']);
+    assert.equal(await f.page.evaluate(() => { window.alert = () => {}; return createNote('Work/Sneaky'); }), null);
+    assert.equal(await f.page.evaluate(() => notes.has('Work/Sneaky.md')), false);
+
+    await f.page.evaluate(() => switchSpace('Work'));
+    assert.equal(await f.page.evaluate(() => cur), 'Work/Projects/Plan.md');
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.locator('#space-name').textContent(), 'Work');
+    assert.equal(await f.page.evaluate(() => cur), 'Work/Projects/Plan.md');
+    const stored = JSON.stringify(await raw(f.page));
+    assert.equal(stored.includes('Projects/Plan'), false);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('a new device picks up spaces; a folder becomes a space without moving files; removing a space keeps its notes', async () => {
+  const f = await fixture({ legacy: false });
+  try {
+    f.remote.set('.vault/spaces.json', { sha: 'sp1', content: spacesFile([{ folder: 'Work', name: 'Day job', updated: 1 }]) });
+    f.remote.set('Work/w.md', { sha: 'w', content: 'work note' });
+    f.remote.set('Projects/a.md', { sha: 'a', content: 'a' });
+    f.remote.set('Projects/b.md', { sha: 'b', content: 'b' });
+    f.remote.set('Root.md', { sha: 'r', content: 'root' });
+    await unlock(f.page); await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.deepEqual(await f.page.evaluate(() => activeSpaces().map(s => s.name)), ['Main', 'Day job']);
+    assert.equal(await f.page.evaluate(() => live().some(n => n.path === 'Work/w.md')), false);
+    await f.page.evaluate(() => switchSpace('Work'));
+    assert.deepEqual(await listed(f.page), ['Work/w.md']);
+
+    await f.page.evaluate(async () => { window.confirm = () => true; await switchSpace(''); await createSpace('projects'); });
+    assert.equal(await f.page.evaluate(() => space), 'Projects');
+    assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md']);
+    const before = f.state.calls.length;
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    const writes = f.state.calls.slice(before).filter(c => c.method !== 'GET').map(c => c.pathname);
+    assert.deepEqual(writes, ['/gh/contents/.vault/spaces.json']);
+
+    await f.page.evaluate(() => removeSpace('Projects'));
+    assert.equal(await f.page.evaluate(() => space), '');
+    assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md', 'Root.md', 'Welcome.md']);
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(f.remote.has('Projects/a.md'), true);
+    assert.equal(JSON.parse(f.remote.get('.vault/spaces.json').content).spaces.find(s => s.folder === 'Projects').removed, true);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('space changes from two devices merge instead of creating conflict copies', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => createSpace('Work')); await settled(f.page);
+    // Another device added a space and removed nothing before this device synced.
+    f.remote.set('.vault/spaces.json', { sha: 'other', content: spacesFile([{ folder: 'Journal', name: 'Journal', updated: Date.now() }]) });
+    f.remote.set('Journal/today.md', { sha: 'j', content: 'dear diary' });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    const remote = JSON.parse(f.remote.get('.vault/spaces.json').content).spaces.map(s => s.folder).sort();
+    assert.deepEqual(remote, ['', 'Journal', 'Work']);
+    assert.equal([...f.remote.keys()].some(name => name.includes('conflict')), false);
+    assert.equal(await f.page.evaluate(() => space), 'Work');
+
+    // The other device later removes the space this device is in: follow the open note back to Main.
+    f.remote.set('.vault/spaces.json', { sha: 'other2', content: spacesFile([{ folder: 'Journal', name: 'Journal', updated: 1 }, { folder: 'Work', name: 'Work', updated: Date.now() + 1000, removed: true }]) });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => space), '');
+    assert.equal(await f.page.locator('#space-name').textContent(), 'Main');
+    assert.equal(await f.page.evaluate(() => live().some(n => n.path === 'Work/Home.md')), true);
+    assert.deepEqual(await f.page.evaluate(() => activeSpaces().map(s => s.folder).sort()), ['', 'Journal']);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

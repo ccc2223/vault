@@ -71,6 +71,15 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #qs-list div{padding:7px 9px;border-radius:6px;cursor:pointer}
 #qs-list div.sel{background:var(--accent);color:#fff}
 #back{display:none}
+#space{margin:10px 10px 0;background:none;border-color:transparent;text-align:left;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#space:hover{border-color:var(--border)}
+#sp-list{margin:10px 0;max-height:50vh;overflow:auto}
+#sp-list .sp{display:flex;gap:6px;align-items:center;padding:3px 0}
+#sp-list .go{flex:1;min-width:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sp-list .cur .go{border-color:var(--accent)}
+#sp-list .n{color:var(--mute);font-size:12px;margin-left:6px}
+#sp-new{display:flex;gap:8px}
+#sp-new input{flex:1;min-width:0;width:auto}
 @media(max-width:800px){
   #side{position:fixed;z-index:20;top:0;bottom:0;left:0;transform:translateX(-100%);transition:transform .2s;width:84vw;max-width:320px}
   body.drawer #side{transform:none}
@@ -109,6 +118,7 @@ button:disabled{opacity:.6;cursor:wait}
   </form>
 </section>
 <aside id="side">
+  <button id="space" title="Switch space (Ctrl/Cmd+Shift+O)"><span id="space-name"></span> <span aria-hidden="true">▾</span></button>
   <div class="top">
     <input id="q" type="search" placeholder="Search notes…" autocomplete="off">
     <button id="new" title="New note (Alt+N)">＋</button>
@@ -155,6 +165,15 @@ button:disabled{opacity:.6;cursor:wait}
   <label for="new-password">New Cloudflare password</label><input id="new-password" type="password" autocomplete="new-password">
   <p id="change-error" role="alert"></p>
   <div class="row"><button id="change-cancel">Cancel</button><button id="change-save" class="on">Verify &amp; update</button></div>
+</dialog>
+
+<dialog id="dlg-spaces">
+  <h3 style="margin:0">Spaces</h3>
+  <p class="hint">Each space is a separate set of notes, stored as a top-level folder in your notes repo.</p>
+  <div id="sp-list"></div>
+  <form id="sp-new"><input id="sp-name" placeholder="New space name" autocomplete="off" aria-label="New space name"><button class="on">Create</button></form>
+  <p id="sp-err" class="hint" role="alert"></p>
+  <div class="row"><button id="sp-close">Close</button></div>
 </dialog>
 
 <dialog id="dlg-qs">

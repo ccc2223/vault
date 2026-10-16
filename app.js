@@ -21,12 +21,51 @@ const DB = {
 const notes = new Map();   // path -> {path, content, mtime, sha, dirty, deleted}
 let cur = null;            // current path
 let index = { byPath: new Map(), byBase: new Map() };
-const live = () => [...notes.values()].filter(n => !n.deleted);
+
+/* ---------- spaces ---------- */
+// A space is a top-level folder listed in .vault/spaces.json. Main ('') holds every note outside those folders.
+// Notes keep their full repository paths; the UI, links and search only see the current space.
+const SPACES = '.vault/spaces.json';
+let space = '';            // current space folder
+let spaceList = [];        // [{folder, name, updated, removed?}], including removed entries
+const topFolder = p => p.includes('/') ? p.slice(0, p.indexOf('/')) : null;
+const activeSpaces = () => spaceList.filter(s => !s.removed);
+const spaceName = folder => activeSpaces().find(s => s.folder === folder)?.name || 'Main';
+function spaceOf(path) {
+  const top = topFolder(path)?.toLowerCase();
+  return (top && activeSpaces().find(s => s.folder && s.folder.toLowerCase() === top)?.folder) || '';
+}
+const rel = p => { const s = spaceOf(p); return s ? p.slice(s.length + 1) : p; };
+const isNote = n => !n.deleted && n.path !== SPACES;
+const live = () => [...notes.values()].filter(n => isNote(n) && spaceOf(n.path) === space);
+function parseSpaces(text) {
+  try {
+    const list = JSON.parse(text).spaces;
+    return Array.isArray(list) ? list.filter(s => typeof s?.folder === 'string' && typeof s.name === 'string') : [];
+  } catch { return []; }
+}
+const spacesJSON = list => JSON.stringify({ version: 1, spaces: [...list].sort((a, b) => a.folder.localeCompare(b.folder)) }, null, 2) + '\n';
+function loadSpaces() {
+  const n = notes.get(SPACES);
+  spaceList = n && !n.deleted ? parseSpaces(n.content) : [];
+  if (!spaceList.some(s => s.folder === '')) spaceList.unshift({ folder: '', name: 'Main', updated: 0 });
+  spaceList.forEach(s => { if (!s.folder) s.removed = false; });
+}
+// Space lists merge instead of conflicting: the most recent change to each space wins.
+function mergeSpaces(local, remote) {
+  const by = new Map();
+  for (const s of [...parseSpaces(remote), ...parseSpaces(local)]) {
+    const key = s.folder.toLowerCase(), old = by.get(key);
+    if (!old || (s.updated || 0) >= (old.updated || 0)) by.set(key, s);
+  }
+  return spacesJSON([...by.values()]);
+}
 
 function rebuildIndex() {
+  loadSpaces();
   index = { byPath: new Map(), byBase: new Map() };
   for (const n of live().sort((a, b) => a.path.length - b.path.length)) {
-    index.byPath.set(n.path.toLowerCase(), n.path);
+    index.byPath.set(rel(n.path).toLowerCase(), n.path);
     const b = baseName(n.path).toLowerCase();
     if (!index.byBase.has(b)) index.byBase.set(b, n.path);
   }
@@ -102,7 +141,7 @@ function renderList() {
   const snips = new Map();
   if (tokens.length) {
     arr = arr.filter(n => {
-      const hay = (n.path + '\n' + n.content).toLowerCase();
+      const hay = (rel(n.path) + '\n' + n.content).toLowerCase();
       return tokens.every(t => hay.includes(t));
     });
     arr.sort((a, b) => {
@@ -116,7 +155,7 @@ function renderList() {
     arr.sort((a, b) => a.path.localeCompare(b.path));
   }
   $('#list').innerHTML = arr.map(n => {
-    const folder = n.path.includes('/') ? n.path.replace(/\/[^/]*$/, '') : '';
+    const r = rel(n.path), folder = r.includes('/') ? r.replace(/\/[^/]*$/, '') : '';
     return `<div class="item${n.path === cur ? ' cur' : ''}" data-p="${esc(n.path)}">
       <div class="t">${esc(baseName(n.path))}${n.dirty ? ' •' : ''}</div>
       ${folder ? `<div class="f">${esc(folder)}</div>` : ''}
@@ -151,8 +190,11 @@ async function openNote(path) {
   await flush();
   Auth.ensure(epoch);
   if (!notes.has(path) || notes.get(path).deleted) return;
+  if (spaceOf(path) !== space) { space = spaceOf(path); rebuildIndex(); renderSpace(); }
   cur = path;
-  Auth.store.last = path;
+  // Remember the current space and the last note in each space (stored encrypted with the notes).
+  const last = Auth.store.last && typeof Auth.store.last === 'object' ? Auth.store.last : { notes: {} };
+  Auth.store.last = { space, notes: { ...last.notes, [space]: path } };
   $('#ta').value = notes.get(path).content;
   $('#title').textContent = baseName(path);
   document.title = baseName(path) + ' – Vault';
@@ -165,9 +207,16 @@ function normPath(name) {
   if (!p) return null;
   return /\.md$/i.test(p) ? p : p + '.md';
 }
+// Full repository path for a note name typed in the current space.
+function notePath(name) {
+  const p = normPath(name); if (!p) return null;
+  const full = space ? space + '/' + p : p;
+  if (spaceOf(full) !== space) { alert(`"${topFolder(p)}" is a separate space. Switch to it to add notes there.`); return null; }
+  return full;
+}
 async function createNote(name, content = '') {
   Auth.ensure();
-  const p = normPath(name); if (!p) return null;
+  const p = notePath(name); if (!p) return null;
   const ex = [...notes.values()].find(n => n.path.toLowerCase() === p.toLowerCase());
   if (ex && !ex.deleted) { await openNote(ex.path); return ex.path; }
   if (ex && ex.deleted) { notes.delete(ex.path); await DB.del(ex.path); }
@@ -181,9 +230,9 @@ async function createNote(name, content = '') {
 async function renameNote() {
   Auth.ensure();
   const n = notes.get(cur); if (!n) return;
-  const to = prompt('Rename note (use folder/name to move):', n.path.replace(/\.md$/i, ''));
+  const to = prompt('Rename note (use folder/name to move):', rel(n.path).replace(/\.md$/i, ''));
   if (!to) return;
-  const p = normPath(to);
+  const p = notePath(to);
   if (!p || p === n.path) return;
   if ([...notes.values()].some(x => !x.deleted && x.path.toLowerCase() === p.toLowerCase())) { alert('A note with that name already exists.'); return; }
   await flush();
@@ -311,7 +360,7 @@ function drawQs() {
   if (q && !qsRes.some(r => baseName(r.path).toLowerCase() === q)) qsRes.push({ create: $('#qs-in').value.trim() });
   qsSel = Math.min(qsSel, qsRes.length - 1);
   $('#qs-list').innerHTML = qsRes.map((r, i) =>
-    `<div class="${i === qsSel ? 'sel' : ''}" data-i="${i}">${r.create != null ? `Create “${esc(r.create)}”` : esc(r.path.replace(/\.md$/i, ''))}</div>`).join('');
+    `<div class="${i === qsSel ? 'sel' : ''}" data-i="${i}">${r.create != null ? `Create “${esc(r.create)}”` : esc(rel(r.path).replace(/\.md$/i, ''))}</div>`).join('');
 }
 async function qsGo(i) {
   const r = qsRes[i]; if (!r) return;
@@ -370,7 +419,7 @@ async function sync() {
     const tree = await gh('/git/trees/' + encodeURIComponent(c.branch || 'main') + '?recursive=1');
     if (tree.truncated) throw new Error('Repository is too large to sync safely.');
     const remote = new Map(tree.tree
-      .filter(t => t.type === 'blob' && /\.md$/i.test(t.path) && !t.path.split('/').some(s => s.startsWith('.')))
+      .filter(t => t.type === 'blob' && (t.path === SPACES || /\.md$/i.test(t.path) && !t.path.split('/').some(s => s.startsWith('.'))))
       .map(t => [t.path, t.sha]));
     const today = new Date().toISOString().slice(0, 10);
 
@@ -387,6 +436,8 @@ async function sync() {
         Object.assign(l, { content: text, sha, deleted: false, dirty: false, mtime: Date.now() }); restored++;
       } else if (!l.dirty) {
         l.content = text; l.sha = sha; l.mtime = Date.now(); showPulled(l);
+      } else if (p === SPACES) {
+        l.content = mergeSpaces(l.content, text); l.sha = sha; l.dirty = l.content !== text;
       } else if (l.content !== text) {
         const stem = p.replace(/\.md$/i, '') + ` (conflict ${today}`;
         let cp = stem + ').md', suffix = 2;
@@ -425,10 +476,15 @@ async function sync() {
     if (changed) { await DB.replace(); changed = false; }
     rebuildIndex();
     if (!cur || !notes.has(cur) || notes.get(cur).deleted) {
+      if (!activeSpaces().some(s => s.folder === space)) { space = ''; rebuildIndex(); }
       const next = live().sort((a, b) => b.mtime - a.mtime)[0];
       cur = null; if (next) await openNote(next.path);
-    } else showPulled(notes.get(cur));
-    renderList(); renderBacklinks();
+    } else {
+      // Follow the open note if another device created or removed the space it belongs to.
+      if (spaceOf(cur) !== space) { space = spaceOf(cur); rebuildIndex(); }
+      showPulled(notes.get(cur));
+    }
+    renderSpace(); renderList(); renderBacklinks();
     setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
       (pushed ? ` · pushed ${pushed}` : '') + (restored ? ` · restored ${restored} deleted note${restored > 1 ? 's' : ''} edited elsewhere` : ''));
   } catch (e) {
@@ -456,6 +512,90 @@ function showPulled(n) {
   ta.setSelectionRange(Math.min(start, ta.value.length), Math.min(end, ta.value.length));
   renderPreview();
 }
+
+/* ---------- spaces UI ---------- */
+function renderSpace() { $('#space-name').textContent = spaceName(space); }
+async function saveSpaces(list) {
+  const n = notes.get(SPACES) || { path: SPACES, sha: null };
+  Object.assign(n, { content: spacesJSON(list), mtime: Date.now(), dirty: true, deleted: false });
+  notes.set(SPACES, n); await DB.put(n);
+  rebuildIndex(); renderSpace(); scheduleSync(15000);
+}
+async function switchSpace(folder, path) {
+  const epoch = Auth.ensure();
+  await flush(); Auth.ensure(epoch);
+  space = activeSpaces().some(s => s.folder === folder) ? folder : '';
+  cur = null; $('#q').value = '';
+  rebuildIndex(); renderSpace();
+  const want = path || Auth.store.last?.notes?.[space];
+  const start = want && notes.has(want) && isNote(notes.get(want)) && spaceOf(want) === space
+    ? want : live().sort((a, b) => b.mtime - a.mtime)[0]?.path;
+  if (start) await openNote(start); else await createNote('Home', `# ${spaceName(space)}\n\n`);
+}
+async function createSpace(name) {
+  Auth.ensure();
+  name = name.trim();
+  const typed = name.replace(/[\\/<>:"|?*]/g, '').replace(/^[.\s]+/, '').trim(), key = typed.toLowerCase();
+  if (!typed) throw new Error('Enter a space name.');
+  if (activeSpaces().some(s => s.folder.toLowerCase() === key)) throw new Error('That space already exists.');
+  // An existing folder in Main becomes the space as it is: its notes move over without any file changes.
+  const inFolder = [...notes.values()].filter(n => isNote(n) && topFolder(n.path)?.toLowerCase() === key);
+  const folder = inFolder.length ? topFolder(inFolder[0].path) : typed;
+  if (inFolder.length && !confirm(`${inFolder.length} note${inFolder.length > 1 ? 's' : ''} in "${folder}/" will move into this space. Files stay where they are in GitHub.`)) return;
+  await saveSpaces([...spaceList.filter(s => s.folder.toLowerCase() !== key), { folder, name, updated: Date.now() }]);
+  $('#dlg-spaces').close();
+  await switchSpace(folder);
+}
+async function renameSpace(folder) {
+  Auth.ensure();
+  const name = prompt('Rename space (the GitHub folder keeps its name):', spaceName(folder))?.trim();
+  if (!name) return;
+  await saveSpaces(spaceList.map(s => s.folder === folder ? { ...s, name, updated: Date.now() } : s));
+  drawSpaces();
+}
+async function removeSpace(folder) {
+  Auth.ensure();
+  if (!confirm(`Remove the "${spaceName(folder)}" space? No notes are deleted: they stay in GitHub and appear in Main as the "${folder}" folder.`)) return;
+  await saveSpaces(spaceList.map(s => s.folder === folder ? { ...s, removed: true, updated: Date.now() } : s));
+  if (space === folder || spaceOf(cur || '') !== space) await switchSpace('');
+  else { renderList(); renderBacklinks(); }
+  drawSpaces();
+}
+function drawSpaces() {
+  const counts = new Map();
+  for (const n of notes.values()) if (isNote(n)) counts.set(spaceOf(n.path), (counts.get(spaceOf(n.path)) || 0) + 1);
+  $('#sp-list').innerHTML = activeSpaces().sort((a, b) => !a.folder ? -1 : !b.folder ? 1 : a.name.localeCompare(b.name)).map(s =>
+    `<div class="sp${s.folder === space ? ' cur' : ''}" data-f="${esc(s.folder)}">
+      <button class="go">${esc(s.name)} <span class="n">${counts.get(s.folder) || 0}</span></button>
+      <button class="ren" title="Rename space">✎</button>
+      ${s.folder ? '<button class="rm" title="Remove space (keeps its notes)">✕</button>'
+        : '<button class="rm" style="visibility:hidden" tabindex="-1" aria-hidden="true">✕</button>'}</div>`).join('');
+}
+function openSpaces() {
+  Auth.ensure();
+  if ($('#dlg-spaces').open) return;
+  $('#sp-name').value = ''; $('#sp-err').textContent = '';
+  drawSpaces(); $('#dlg-spaces').showModal();
+}
+$('#space').onclick = openSpaces;
+$('#sp-close').onclick = () => $('#dlg-spaces').close();
+$('#dlg-spaces').addEventListener('click', e => { if (e.target === $('#dlg-spaces')) $('#dlg-spaces').close(); });
+$('#sp-list').addEventListener('click', async e => {
+  const row = e.target.closest('.sp[data-f]'); if (!row) return;
+  const folder = row.dataset.f;
+  $('#sp-err').textContent = '';
+  try {
+    if (e.target.closest('.go')) { $('#dlg-spaces').close(); await switchSpace(folder); }
+    else if (e.target.closest('.ren')) await renameSpace(folder);
+    else if (e.target.closest('.rm')) await removeSpace(folder);
+  } catch (error) { if (Auth.active) $('#sp-err').textContent = error.message; }
+});
+$('#sp-new').onsubmit = async e => {
+  e.preventDefault();
+  $('#sp-err').textContent = '';
+  try { await createSpace($('#sp-name').value); }
+  catch (error) { if (Auth.active) $('#sp-err').textContent = error.message; }
+};
 
 /* settings dialog */
 $('#cfg').onclick = () => {
@@ -503,7 +643,8 @@ document.addEventListener('keydown', e => {
   if (!Auth.active) return;
   Auth.ensure();
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openSpaces(); }
+  else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); sync(); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); document.body.classList.add('drawer'); $('#q').focus(); }
   else if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setMode($('#panes').className === 'edit' ? 'view' : 'edit'); }
@@ -534,10 +675,11 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - [ ] Try a task item
 `;
 const App = {
-  snapshot() { return { notes: structuredClone([...notes.values()]), last: cur }; },
+  snapshot() { return { notes: structuredClone([...notes.values()]), last: structuredClone(Auth.store.last) }; },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT); clearTimeout(rpT);
-    notes.clear(); cur = null; rebuildIndex(); syncing = null;
+    notes.clear(); cur = null; space = ''; rebuildIndex(); syncing = null;
+    $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     $('#ta').value = ''; $('#pv').replaceChildren(); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
@@ -550,12 +692,13 @@ const App = {
   },
   async open() {
     for (const note of await DB.all()) notes.set(note.path, note);
-    if (!live().length) await createNote('Welcome', WELCOME);
-    rebuildIndex();
-    const last = Auth.store.last;
-    const start = last && notes.has(last) && !notes.get(last).deleted ? last : live().sort((a,b) => b.mtime-a.mtime)[0].path;
+    space = ''; rebuildIndex();
+    // Older versions stored only the last note's path.
+    const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;
+    if (legacy || !last) Auth.store.last = { space: '', notes: {} };
+    if (![...notes.values()].some(isNote)) await createNote('Welcome', WELCOME);
     setMode(localStorage.getItem('vault.mode') || 'split');
-    await openNote(start);
+    await switchSpace(legacy ? spaceOf(legacy) : last?.space || '', legacy || undefined);
     if (getCfg()) sync();
     else setStatus('Saved notes unlocked — offline or sign in in Settings to sync');
   },

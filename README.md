@@ -19,10 +19,24 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Markdown editor and live preview: Edit / Split / View
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
+- Spaces: separate sets of notes, each with its own links, search and backlinks
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
-Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift+F search · Alt+N new note
+Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift+F search · Alt+N new note
+
+## Spaces
+
+Spaces are separate sets of notes, like Obsidian vaults. Switch, create, rename or remove them with the space name at the top of the sidebar (Ctrl/Cmd+Shift+O).
+
+- Each space is a top-level folder in your notes repo, such as `Work/`. **Main** holds every note outside those folders, so existing notes stay where they are.
+- Links, backlinks, search, the quick switcher and autocomplete only see the current space. Vault reopens the space and note you last used.
+- The list of spaces is stored in `.vault/spaces.json` in the repo, so every device sees the same spaces. Spaces changed on two devices are merged.
+- Creating a space with the name of an existing folder in Main turns that folder into a space without moving any files.
+- Renaming a space only changes its display name; the GitHub folder keeps its name. Removing a space turns it back into an ordinary folder in Main and deletes no notes.
+- You can open any space's folder as its own Obsidian vault.
+
+No Worker or Cloudflare changes are needed. A device still running an older Vault shows other spaces' notes as ordinary folders until it updates.
 
 ## Deploy
 
