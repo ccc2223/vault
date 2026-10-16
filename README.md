@@ -78,7 +78,7 @@ A failed change keeps the existing encrypted vault. Changing a server password c
 
 Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. Settings lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
 
-If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. Renames and deletes propagate. Each changed note produces one GitHub commit; images and attachments are not supported yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
+If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note produces one GitHub commit; images and attachments are not supported yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
 
 ## Development and checks
 

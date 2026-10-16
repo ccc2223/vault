@@ -364,6 +364,7 @@ async function sync() {
   if (!c) { setStatus('Saved notes unlocked — sign in in Settings to sync'); return; }
   if (syncing === epoch) return;
   syncing = epoch; clearTimeout(syncT); setStatus('Syncing…');
+  let changed = false;
   try {
     await flush();
     const tree = await gh('/git/trees/' + encodeURIComponent(c.branch || 'main') + '?recursive=1');
@@ -373,62 +374,87 @@ async function sync() {
       .map(t => [t.path, t.sha]));
     const today = new Date().toISOString().slice(0, 10);
 
-    // pull
-    for (const [p, sha] of remote) {
+    // pull: fetch changed blobs a few at a time; each result is applied in memory in one synchronous step
+    let restored = 0;
+    await pool([...remote].filter(([p, sha]) => notes.get(p)?.sha !== sha), 6, async ([p, sha]) => {
+      const text = b64d((await gh('/git/blobs/' + sha)).content);
       const l = notes.get(p);
-      if (l && l.deleted) continue;
-      if (l && l.sha === sha) continue;
-      const blob = await gh('/git/blobs/' + sha);
-      const text = b64d(blob.content);
+      changed = true;
       if (!l) {
-        const n = { path: p, content: text, mtime: Date.now(), sha, dirty: false };
-        notes.set(p, n); await DB.put(n);
+        notes.set(p, { path: p, content: text, mtime: Date.now(), sha, dirty: false });
+      } else if (l.deleted) {
+        // Deleted here but edited elsewhere since our last sync: keep the remote edit rather than discard it.
+        Object.assign(l, { content: text, sha, deleted: false, dirty: false, mtime: Date.now() }); restored++;
       } else if (!l.dirty) {
-        l.content = text; l.sha = sha; l.mtime = Date.now(); await DB.put(l);
+        l.content = text; l.sha = sha; l.mtime = Date.now(); showPulled(l);
       } else if (l.content !== text) {
         const stem = p.replace(/\.md$/i, '') + ` (conflict ${today}`;
         let cp = stem + ').md', suffix = 2;
         while (notes.has(cp)) cp = stem + ' ' + suffix++ + ').md';
-        const n = { path: cp, content: text, mtime: Date.now(), sha: null, dirty: true }; notes.set(cp, n); await DB.put(n);
-        l.sha = sha; await DB.put(l);
-      } else { l.sha = sha; l.dirty = false; await DB.put(l); }
-    }
+        notes.set(cp, { path: cp, content: text, mtime: Date.now(), sha: null, dirty: true });
+        l.sha = sha;
+      } else { l.sha = sha; l.dirty = false; }
+    });
     // remote deletions
     for (const l of [...notes.values()]) {
       if (remote.has(l.path) || l.deleted) continue;
-      if (l.sha && !l.dirty) { notes.delete(l.path); await DB.del(l.path); }
-      else if (l.sha) { l.sha = null; await DB.put(l); }
+      if (l.sha && !l.dirty) { notes.delete(l.path); changed = true; }
+      else if (l.sha) { l.sha = null; changed = true; }
     }
+    // Persist everything pulled as one encrypted write instead of re-encrypting the vault per note.
+    if (changed) { await DB.replace(); changed = false; }
     // push
     let pushed = 0;
     for (const l of [...notes.values()]) {
       if (l.deleted) {
         if (remote.has(l.path)) {
-          await gh('/contents/' + encPath(l.path), { method: 'DELETE', body: JSON.stringify({ message: 'Delete ' + l.path, sha: remote.get(l.path), branch: c.branch || 'main' }) });
+          // The pull restores tombstones whose remote changed, so this sha is the version we deleted.
+          await gh('/contents/' + encPath(l.path), { method: 'DELETE', body: JSON.stringify({ message: 'Delete ' + l.path, sha: l.sha, branch: c.branch || 'main' }) });
           pushed++;
         }
-        notes.delete(l.path); await DB.del(l.path); continue;
+        notes.delete(l.path); changed = true; continue;
       }
       if (l.dirty || !l.sha) {
         const sent = l.content;
         const body = { message: 'Update ' + l.path, content: b64e(sent), branch: c.branch || 'main' };
         if (l.sha) body.sha = l.sha;
         const res = await gh('/contents/' + encPath(l.path), { method: 'PUT', body: JSON.stringify(body) });
-        l.sha = res.content.sha; l.dirty = l.content !== sent; await DB.put(l); pushed++;
+        l.sha = res.content.sha; l.dirty = l.content !== sent; changed = true; pushed++;
       }
     }
+    if (changed) { await DB.replace(); changed = false; }
     rebuildIndex();
     if (!cur || !notes.has(cur) || notes.get(cur).deleted) {
       const next = live().sort((a, b) => b.mtime - a.mtime)[0];
       cur = null; if (next) await openNote(next.path);
-    } else if (document.activeElement !== ta && ta.value !== notes.get(cur).content) {
-      ta.value = notes.get(cur).content; renderPreview();
-    }
+    } else showPulled(notes.get(cur));
     renderList(); renderBacklinks();
-    setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (pushed ? ` · pushed ${pushed}` : ''));
+    setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+      (pushed ? ` · pushed ${pushed}` : '') + (restored ? ` · restored ${restored} deleted note${restored > 1 ? 's' : ''} edited elsewhere` : ''));
   } catch (e) {
+    // Keep what was already pulled or pushed; the lock path persists its own snapshot.
+    if (changed && epoch === Auth.epoch) await DB.replace().catch(() => {});
     if (epoch === Auth.epoch) setStatus('Sync failed: ' + e.message, true);
   } finally { if (syncing === epoch) syncing = null; }
+}
+// Run fn over items with limited concurrency. On failure, stop taking new items and wait for the rest to settle.
+async function pool(items, limit, fn) {
+  let next = 0; const errors = [];
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (!errors.length && next < items.length) {
+      try { await fn(items[next++]); } catch (error) { errors.push(error); }
+    }
+  }));
+  if (errors.length) throw errors[0];
+}
+// Show pulled text in the open editor at once, even when focused, so the next keystroke builds on it.
+// Only unedited notes are replaced; local edits keep their text and the remote copy becomes a conflict note.
+function showPulled(n) {
+  if (n.path !== cur || n.dirty || ta.value === n.content) return;
+  const start = ta.selectionStart, end = ta.selectionEnd;
+  ta.value = n.content;
+  ta.setSelectionRange(Math.min(start, ta.value.length), Math.min(end, ta.value.length));
+  renderPreview();
 }
 
 /* settings dialog */

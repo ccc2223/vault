@@ -44,8 +44,10 @@ async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
       if (state.delay) { state.started = true; await state.delay; }
       body = { tree: [...remote].map(([name, n]) => ({ path: name, sha: n.sha, type: 'blob' })) };
     } else if (pathname.startsWith('/gh/git/blobs/')) {
-      const note = [...remote.values()].find(n => n.sha === pathname.split('/').pop());
-      body = { content: Buffer.from(note?.content || '').toString('base64') };
+      const sha = pathname.split('/').pop();
+      const note = [...remote.values()].find(n => n.sha === sha);
+      if (state.failBlob === sha) { status = 500; body = { message: 'Upstream error' }; }
+      else body = { content: Buffer.from(note?.content || '').toString('base64') };
     } else if (pathname.startsWith('/gh/contents/')) {
       const name = decodeURIComponent(pathname.slice('/gh/contents/'.length));
       if (req.method() === 'DELETE') remote.delete(name);
@@ -397,6 +399,72 @@ test('renames, backlinks, sanitized Markdown and deletes still work with encrypt
     const stored = JSON.stringify(await raw(f.page));
     assert.equal(stored.includes('Linker'), false);
     assert.equal(stored.includes(secret), false);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('pulled edits replace the focused, unedited note so the next keystroke cannot revert them', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    f.remote.set('Secret draft.md', { sha: 'phone-edit', content: 'Edit from phone' });
+    await f.page.locator('#ta').focus();
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await f.page.locator('#ta').inputValue(), 'Edit from phone');
+    await f.page.keyboard.press('End'); await f.page.keyboard.type('!');
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(f.remote.get('Secret draft.md').content, 'Edit from phone!');
+    assert.equal([...f.remote.keys()].some(name => name.includes('conflict')), false);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('a local delete keeps a remote edit made since the last sync instead of discarding it', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => createNote('Other', 'other'));
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    f.remote.set('Secret draft.md', { sha: 'phone-edit', content: 'Important edit from phone' });
+    await f.page.evaluate(async () => { await openNote('Secret draft.md'); window.confirm = () => true; await deleteNote(); await App.sync(); });
+    await settled(f.page);
+    assert.equal(f.remote.get('Secret draft.md').content, 'Important edit from phone');
+    assert.equal(await f.page.evaluate(() => !notes.get('Secret draft.md').deleted && notes.get('Secret draft.md').content), 'Important edit from phone');
+    assert.match(await f.page.locator('#status').textContent(), /restored 1 deleted note/);
+    // With no remote change, deletes still propagate.
+    await f.page.evaluate(async () => { await openNote('Other.md'); await deleteNote(); await App.sync(); });
+    await settled(f.page);
+    assert.equal(f.remote.has('Other.md'), false);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('first sync persists pulled notes in one encrypted write, and a failed pull keeps what arrived', async () => {
+  const f = await fixture({ legacy: false });
+  try {
+    for (let i = 0; i < 200; i++) f.remote.set(`n/${i}.md`, { sha: 's' + i, content: `Note ${i}` });
+    f.state.failBlob = 's150';
+    await unlock(f.page);
+    await f.page.evaluate(() => {
+      const persist = Auth.store.persist.bind(Auth.store);
+      window.persists = 0; Auth.store.persist = () => { window.persists++; return persist(); };
+    });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.match(await f.page.locator('#status').textContent(), /Sync failed/);
+    assert.equal(await f.page.evaluate(() => notes.has('n/150.md')), false);
+    const pulled = await f.page.evaluate(() => live().filter(n => n.path.startsWith('n/')).length);
+    assert.ok(pulled > 0);
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => live().filter(n => n.path.startsWith('n/')).length), pulled);
+
+    f.state.offline = false; f.state.failBlob = null;
+    await f.page.evaluate(args => Auth.connect(args.url, 'main', args.password), { url, password });
+    await f.page.evaluate(() => { window.persists = 0; });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.get('n/150.md').content), 'Note 150');
+    assert.ok(await f.page.evaluate(() => window.persists) <= 3, 'sync should not re-encrypt the vault per note');
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
