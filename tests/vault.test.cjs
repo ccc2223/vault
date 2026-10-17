@@ -716,3 +716,58 @@ test('images from GitHub download and embed with Obsidian and Markdown syntax; c
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('clicking an image picks it; handles resize it freely into widthxheight; Del and Backspace remove it but keep the file', async () => {
+  const f = await fixture();
+  try {
+    f.remote.set('attachments/beach.png', { sha: 'beach-1', b64: PNG_1PX });
+    f.remote.set('Pics.md', { sha: 'pics-1', content: 'Top\n![[beach.png|50]]\nSee ![Beach](attachments/beach.png) here\nEnd' });
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => openNote('Pics.md'));
+    await shown(f.page, 2);
+    const imgs = f.page.locator('#ed img.att');
+
+    // A click picks the image: outlined, three handles, and its Markdown selected but still rendered.
+    await imgs.first().click();
+    assert.equal(await f.page.locator('#ed .cm-picked').count(), 1);
+    assert.equal(await f.page.locator('#ed .cm-picked .cm-handle').count(), 3);
+    assert.equal(await f.page.evaluate(() => { const r = editor.view.state.selection.main; return editor.text.slice(r.from, r.to); }), '![[beach.png|50]]');
+    assert.doesNotMatch(await f.page.locator('#ed .cm-content').textContent(), /!\[\[/);
+
+    // Dragging the corner changes width and height independently.
+    const drag = async (sel, dx, dy) => {
+      const b = await f.page.locator(sel).boundingBox(), x = b.x + b.width / 2, y = b.y + b.height / 2;
+      await f.page.mouse.move(x, y); await f.page.mouse.down();
+      await f.page.mouse.move(x + dx / 2, y + dy / 2); await f.page.mouse.move(x + dx, y + dy); await f.page.mouse.up();
+    };
+    await drag('#ed .cm-picked .cm-handle-se', 70, 10);
+    assert.equal((await editorText(f.page)).split('\n')[1], '![[beach.png|120x60]]');
+    assert.deepEqual(await imgs.first().evaluate(i => [i.getBoundingClientRect().width, i.getBoundingClientRect().height]), [120, 60]);
+    assert.equal(await f.page.locator('#ed .cm-picked .cm-handle').count(), 3, 'still picked after resizing');
+    await drag('#ed .cm-picked .cm-handle-s', 0, 20);
+    assert.equal((await editorText(f.page)).split('\n')[1], '![[beach.png|120x80]]');
+
+    // Markdown images keep their alt text and get the size after it.
+    await imgs.nth(1).click();
+    await drag('#ed .cm-picked .cm-handle-e', 30, 0);
+    assert.match(await editorText(f.page), /See !\[Beach\|\d+x\d+\]\(attachments\/beach\.png\) here/);
+
+    // Backspace removes an inline image; Delete removes an image alone on its line with the line.
+    await f.page.keyboard.press('Backspace');
+    assert.equal(await editorText(f.page), 'Top\n![[beach.png|120x80]]\nSee  here\nEnd');
+    await imgs.first().click();
+    await f.page.keyboard.press('Delete');
+    assert.equal(await editorText(f.page), 'Top\nSee  here\nEnd');
+    assert.equal(await f.page.evaluate(() => files.has('attachments/beach.png')), true, 'the image file stays in attachments/');
+
+    // Undo brings it back, and a double click shows its Markdown to edit.
+    await f.page.keyboard.press('ControlOrMeta+z');
+    assert.equal(await editorText(f.page), 'Top\n![[beach.png|120x80]]\nSee  here\nEnd');
+    await imgs.first().dblclick();
+    assert.match(await f.page.locator('#ed .cm-content').textContent(), /!\[\[beach\.png\|120x80\]\]/);
+    assert.equal(await f.page.locator('#ed .cm-picked').count(), 0);
+    await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.get('Pics.md').content), 'Top\n![[beach.png|120x80]]\nSee  here\nEnd');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
