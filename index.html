@@ -80,11 +80,12 @@ input,textarea{font:inherit;color:inherit}
 #ed .cm-table th,#ed .cm-table td{border:1px solid var(--border);padding:4px 10px;min-width:3em;vertical-align:top;outline:0;white-space:pre-wrap}
 #ed .cm-table th{background:var(--bg2);font-weight:600;text-align:left}
 #ed .cm-table [data-editing]{box-shadow:inset 0 0 0 2px var(--accent)}
-#ed .cm-table-add{position:absolute;padding:0;border-radius:4px;font-size:13px;line-height:1;color:var(--mute);background:var(--bg2);opacity:0}
+#ed .cm-table-add{position:absolute;padding:0;border-radius:4px;font-size:13px;line-height:1;color:var(--mute);background:transparent;opacity:0;transition:opacity .15s}
 #ed .cm-table-add-col{top:0;right:0;width:16px;bottom:20px}
 #ed .cm-table-add-row{left:0;bottom:0;height:16px;right:20px}
-#ed .cm-table:hover .cm-table-add,#ed .cm-table:focus-within .cm-table-add{opacity:1}
-@media (hover:none){#ed .cm-table-add{opacity:.8}}
+#ed .cm-table:hover .cm-table-add,#ed .cm-table:focus-within .cm-table-add{opacity:.3}
+#ed .cm-table .cm-table-add:hover,#ed .cm-table .cm-table-add:focus-visible{opacity:1;background:var(--bg2)}
+@media (hover:none){#ed .cm-table-add{opacity:.8;background:var(--bg2)}}
 .cm-table-menu{position:fixed;z-index:20;display:flex;flex-direction:column;min-width:170px;padding:4px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
 .cm-table-menu button{background:none;border:0;border-radius:4px;text-align:left;padding:6px 10px}
 .cm-table-menu button:hover:not(:disabled){background:var(--accent);color:#fff}
