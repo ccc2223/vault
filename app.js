@@ -207,8 +207,51 @@ function touch(n) {
 }
 async function flush() {
   clearTimeout(saveT); saveT = null;
-  Auth.ensure();
+  const epoch = Auth.ensure();
+  await Promise.all(versionWaits); Auth.ensure(epoch);
   await DB.replace();
+}
+
+/* ---------- trash and note history ---------- */
+// Earlier versions and deleted notes stay on this device only, encrypted one record per version like images, and
+// listed in the sealed vault as {id, path, time, size, hash, why, trashed}. GitHub keeps only the current notes.
+const KEEP_VERSIONS = 20, KEEP_MS = 30 * 86400000, VERSION_GAP = 5 * 60000;
+const versionWaits = new Set();  // versions still being encrypted; saves wait for them
+const versioned = new Map();     // path -> when this session last kept a version before an edit
+async function digest(text) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(hash).subarray(0, 12)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const latestVersion = path => Auth.store.history.reduce((a, v) => v.path === path && !v.trashed && (!a || v.time > a.time) ? v : a, null);
+// Keep text as an earlier version of path, or as a deleted note in the trash. why: edit, sync, restore or delete.
+function keepVersion(path, text, why, trashed = false) {
+  if (path === SPACES || (!trashed && !text.trim())) return Promise.resolve();
+  const epoch = Auth.ensure(), time = Date.now();
+  const task = (async () => {
+    const hash = await digest(text);
+    if (!trashed && latestVersion(path)?.hash === hash) return;
+    const id = await Auth.store.putVersion(text); Auth.ensure(epoch);
+    Auth.store.history.push({ id, path, time, size: text.length, hash, why, trashed });
+    pruneHistory();
+  })();
+  const settled = task.catch(() => {});
+  versionWaits.add(settled); settled.then(() => versionWaits.delete(settled));
+  return task;
+}
+// Before a note is edited, keep the text the edit replaces, at most once every five minutes.
+function beforeEdit(n) {
+  if (Date.now() - Math.max(versioned.get(n.path) || 0, latestVersion(n.path)?.time || 0) < VERSION_GAP) return;
+  versioned.set(n.path, Date.now());
+  keepVersion(n.path, n.content, 'edit').catch(error => { if (Auth.active) setStatus('Could not keep a version: ' + error.message, true); });
+}
+// Deleted notes, and history of notes that no longer exist, last 30 days; each note keeps its last 20 versions.
+function pruneHistory() {
+  const now = Date.now(), alive = new Set([...notes.values()].filter(isNote).map(n => n.path)), per = new Map();
+  Auth.store.history = [...Auth.store.history].sort((a, b) => b.time - a.time).filter(v => {
+    if (v.trashed || !alive.has(v.path)) { if (now - v.time >= KEEP_MS) return false; if (v.trashed) return true; }
+    const count = (per.get(v.path) || 0) + 1; per.set(v.path, count);
+    return count <= KEEP_VERSIONS;
+  });
 }
 
 /* ---------- UI: list / search ---------- */
@@ -249,6 +292,8 @@ function renderList() {
       ${folder ? `<div class="f">${esc(folder)}</div>` : ''}
       ${snips.get(n.path) ? `<div class="s">${snips.get(n.path)}</div>` : ''}</div>`;
   }).join('') || '<div class="item" style="color:var(--mute)">No notes</div>';
+  const inTrash = trashed().length;
+  $('#trash').textContent = '🗑 Trash' + (inTrash ? ` (${inTrash})` : '');
 }
 
 /* ---------- backlinks ---------- */
@@ -338,20 +383,23 @@ async function renameNote(name) {
       re.lastIndex = 0;
     }
   }
-  // Persist the new note, old tombstone and rewritten links as one encrypted update.
+  for (const v of Auth.store.history) if (v.path === old && !v.trashed) v.path = p;
+  // Persist the new note, old tombstone, rewritten links and moved history as one encrypted update.
   await DB.replace();
   rebuildIndex(); cur = null; await openNote(p); scheduleSync(15000);
 }
 async function deleteNote() {
   Auth.ensure();
   const n = notes.get(cur); if (!n) return;
-  if (!confirm(`Delete "${baseName(n.path)}"?`)) return;
+  if (!confirm(`Move "${baseName(n.path)}" to the trash?`)) return;
   clearTimeout(saveT);
+  await keepVersion(n.path, n.content, 'delete', true);
   if (n.sha) { n.deleted = true; await DB.put(n); } else { notes.delete(n.path); await DB.del(n.path); }
   rebuildIndex(); cur = null;
   const next = live().sort((a, b) => b.mtime - a.mtime)[0];
   if (next) await openNote(next.path); else await createNote('Untitled');
   scheduleSync(15000);
+  setStatus(`Moved "${baseName(n.path)}" to the trash`);
 }
 
 /* ---------- editor ---------- */
@@ -359,7 +407,7 @@ async function deleteNote() {
 async function followLink(target) { const p = resolve(target); if (p) await openNote(p); else await createNote(target); }
 async function openAttachment(path) { const f = files.get(path); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); }
 const editor = LiveEditor.create($('#ed'), {
-  change(text) { const n = notes.get(cur); if (!n) return; n.content = text; touch(n); },
+  change(text) { const n = notes.get(cur); if (!n) return; beforeEdit(n); n.content = text; touch(n); },
   cursor(typed) { if (typed) updateSug(); else hideSug(); },
   keydown: e => sugKey(e),
   paste(e) {
@@ -493,6 +541,106 @@ function sugKey(e) {
 }
 editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
 
+/* ---------- trash and history dialog ---------- */
+let histTrash = false, histItems = [], histSel = 0;
+const when = t => new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const size = n => n < 1000 ? n + ' characters' : (n / 1000).toFixed(1) + 'k characters';
+const WHY = { edit: 'Before editing', sync: 'Before a synced change', restore: 'Before restoring an older version' };
+const trashed = () => Auth.store.history.filter(v => v.trashed && spaceOf(v.path) === space);
+function openHistory(trash) {
+  Auth.ensure();
+  if (!trash && !cur) return;
+  histTrash = trash; histSel = 0; $('#h-err').textContent = '';
+  drawHistory();
+  if (!$('#dlg-hist').open) $('#dlg-hist').showModal();
+}
+function drawHistory() {
+  histItems = (histTrash ? trashed() : Auth.store.history.filter(v => !v.trashed && v.path === cur)).sort((a, b) => b.time - a.time);
+  histSel = Math.max(0, Math.min(histSel, histItems.length - 1));
+  $('#h-title').textContent = histTrash ? 'Trash' : 'History: ' + baseName(cur);
+  $('#h-hint').textContent = histTrash ? 'Deleted notes stay here for 30 days, encrypted on this device.'
+    : 'Earlier versions of this note, kept encrypted on this device. Each note keeps its last 20.';
+  $('#h-list').innerHTML = histItems.map((v, i) => `<div class="${i === histSel ? 'sel' : ''}" data-i="${i}">
+      <div>${esc(histTrash ? rel(v.path).replace(/\.md$/i, '') : when(v.time))}</div>
+      <div class="m">${esc(histTrash ? (v.why === 'sync' ? 'Deleted on another device, ' : 'Deleted ') + when(v.time) : WHY[v.why] || '')} · ${size(v.size)}</div></div>`).join('') ||
+    `<div class="none">${histTrash ? 'The trash is empty.' : 'No earlier versions yet. Vault keeps one before you edit, at most every five minutes, and before sync replaces the text.'}</div>`;
+  $('#h-restore').disabled = !histItems.length;
+  $('#h-forget').hidden = $('#h-empty').hidden = !histTrash;
+  $('#h-forget').disabled = $('#h-empty').disabled = !histItems.length;
+  showVersion();
+}
+async function showVersion() {
+  const v = histItems[histSel], view = $('#h-view'), epoch = Auth.epoch;
+  view.textContent = ''; view.hidden = !v;
+  if (!v) return;
+  try {
+    const text = await Auth.store.getVersion(v.id);
+    if (epoch === Auth.epoch && histItems[histSel] === v) view.textContent = text;
+  } catch (error) { if (Auth.active) $('#h-err').textContent = error.message; }
+}
+// Put an earlier version back as an ordinary, undoable edit, keeping the current text as a version first.
+async function restoreVersion(v) {
+  const epoch = Auth.ensure(), n = notes.get(cur);
+  if (!n || v.path !== cur) return;
+  const text = await Auth.store.getVersion(v.id); Auth.ensure(epoch);
+  if (text !== n.content) {
+    await keepVersion(n.path, n.content, 'restore');
+    editor.insert(text, 0, editor.text.length);
+  }
+  setStatus('Restored the version from ' + when(v.time));
+}
+// Bring a deleted note back under its old name, or beside a note that has taken it.
+async function restoreTrashed(v) {
+  const epoch = Auth.ensure();
+  const text = await Auth.store.getVersion(v.id); Auth.ensure(epoch);
+  await flush(); Auth.ensure(epoch);
+  const taken = p => [...notes.values()].some(n => isNote(n) && n.path.toLowerCase() === p.toLowerCase());
+  let p = v.path;
+  for (let i = 1; taken(p); i++) p = v.path.replace(/\.md$/i, ` (restored${i > 1 ? ' ' + i : ''}).md`);
+  const old = notes.get(p);  // a delete that hasn't synced yet
+  if (old) Object.assign(old, { content: text, mtime: Date.now(), dirty: true, deleted: false });
+  else notes.set(p, { path: p, content: text, mtime: Date.now(), sha: null, dirty: true });
+  Auth.store.history = Auth.store.history.filter(x => x !== v);
+  await DB.replace(); Auth.ensure(epoch);
+  rebuildIndex(); cur = null; await openNote(p); scheduleSync(15000);
+  setStatus(`Restored "${baseName(p)}" from the trash`);
+}
+async function forget(list) {
+  const epoch = Auth.ensure(), drop = new Set(list);
+  Auth.store.history = Auth.store.history.filter(v => !drop.has(v));
+  await DB.replace(); Auth.ensure(epoch);
+  renderList();
+}
+$('#hist').onclick = () => openHistory(false);
+$('#trash').onclick = () => openHistory(true);
+$('#h-close').onclick = () => $('#dlg-hist').close();
+$('#dlg-hist').addEventListener('click', e => { if (e.target === $('#dlg-hist')) $('#dlg-hist').close(); });
+$('#h-list').addEventListener('click', e => {
+  const d = e.target.closest('div[data-i]'); if (!d) return;
+  histSel = +d.dataset.i;
+  for (const row of $('#h-list').children) row.classList.toggle('sel', row === d);
+  showVersion();
+});
+const histAction = run => async () => {
+  const v = histItems[histSel];
+  $('#h-err').textContent = '';
+  try { await run(v); } catch (error) { if (Auth.active) $('#h-err').textContent = error.message; }
+};
+$('#h-restore').onclick = histAction(async v => {
+  if (!v) return;
+  $('#dlg-hist').close();
+  if (histTrash) await restoreTrashed(v); else await restoreVersion(v);
+});
+$('#h-forget').onclick = histAction(async v => {
+  if (!v || !confirm(`Delete "${baseName(v.path)}" forever?`)) return;
+  await forget([v]); drawHistory();
+});
+$('#h-empty').onclick = histAction(async () => {
+  const list = trashed();
+  if (!list.length || !confirm(`Delete ${list.length} note${list.length > 1 ? 's' : ''} in the trash forever?`)) return;
+  await forget(list); drawHistory();
+});
+
 /* ---------- source mode ---------- */
 // Ctrl/Cmd+E switches between live preview and the plain Markdown source, like Obsidian's Source mode.
 function setSource(on) {
@@ -602,6 +750,8 @@ async function sync() {
     let restored = 0;
     await pool([...remote].filter(([p, sha]) => notes.get(p)?.sha !== sha), 6, async ([p, sha]) => {
       const text = b64d((await gh('/git/blobs/' + sha)).content);
+      const old = notes.get(p);
+      if (old && !old.deleted && !old.dirty && old.content !== text) await keepVersion(p, old.content, 'sync');
       const l = notes.get(p);
       changed = true;
       if (!l) {
@@ -619,9 +769,10 @@ async function sync() {
         l.sha = sha;
       } else { l.sha = sha; l.dirty = false; }
     });
-    // remote deletions
+    // remote deletions: notes deleted on another device go to this device's trash
     for (const l of [...notes.values()]) {
       if (remote.has(l.path) || l.deleted) continue;
+      if (l.sha && !l.dirty) await keepVersion(l.path, l.content, 'sync', true);
       if (l.sha && !l.dirty) { notes.delete(l.path); changed = true; }
       else if (l.sha) { l.sha = null; changed = true; }
     }
@@ -906,7 +1057,10 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - [ ] Try a task item
 `;
 const App = {
-  snapshot() { return { notes: structuredClone([...notes.values()]), files: structuredClone([...files.values()]), last: structuredClone(Auth.store.last) }; },
+  snapshot() {
+    return { notes: structuredClone([...notes.values()]), files: structuredClone([...files.values()]),
+      history: structuredClone(Auth.store.history), last: structuredClone(Auth.store.last) };
+  },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT);
     notes.clear(); files.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
@@ -917,6 +1071,7 @@ const App = {
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren();
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
+    versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash').textContent = '🗑 Trash';
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     for (const input of document.querySelectorAll('input[type=password]')) input.value = '';
     $('#status').textContent = 'Locked'; document.body.classList.remove('drawer');
@@ -924,7 +1079,7 @@ const App = {
   async open() {
     for (const note of await DB.all()) notes.set(note.path, note);
     for (const file of await DB.files()) files.set(file.path, file);
-    space = ''; rebuildIndex();
+    space = ''; rebuildIndex(); pruneHistory();
     // Older versions stored only the last note's path.
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;
     if (legacy || !last) Auth.store.last = { space: '', notes: {} };

@@ -1,5 +1,5 @@
 // Cache only the public app shell. Notes and authentication responses never enter Cache Storage.
-const CACHE = 'vault-v3-secure-14';
+const CACHE = 'vault-v3-secure-15';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg',
   'secure-store.js', 'auth.js', 'editor.js', 'app.js', 'contextmenu.js', 'tablepicker.js', 'vendor/marked.min.js', 'vendor/purify.min.js',
   'vendor/codemirror.min.js'];
