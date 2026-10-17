@@ -21,6 +21,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Code blocks show their language and a Copy button, are highlighted for common languages (```js, ```python, ```bash, ```sql and more), and stay editable in place
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
+- `#tags`, highlighted in the editor: click one, or pick it under **Tags** in the sidebar (with counts), to list its notes. Searching `#tag` also finds nested tags like `#tag/sub`, and typing `#` suggests tags you already use
 - Spaces: separate sets of notes, each with its own links, search and backlinks
 - Images: paste, drop or pick them (🖼); `![[image.png]]`, `![[image.png|300]]` and `![](attachments/image.png)` embeds
 - Trash and note history: deleted notes stay in the trash for 30 days, and each note keeps its last 20 versions (🕘)

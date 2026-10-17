@@ -955,3 +955,40 @@ test('the command palette lists every action, filters as you type, runs one and 
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('#tags highlight in the editor, list with counts in the sidebar, search exactly and autocomplete', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      await createNote('Plan', 'Trip #travel and #work/q4 here.\n\n`#notatag` and [[Secret draft#heading]] and a#b\n\n```\n#incode\n```\n');
+      await createNote('Log', '#travel notes #travelling');
+    });
+    const tags = () => f.page.locator('#tag-list button').allTextContents();
+    await f.page.evaluate(() => { document.getElementById('tags').open = true; });
+    assert.deepEqual(await tags(), ['#travel 2', '#travelling 1', '#work/q4 1']);
+    assert.deepEqual(await f.page.locator('#ed .cm-tag').allTextContents(), ['#travel', '#travelling']);
+
+    // A tag search matches that tag (and nested ones), not tags that merely start with the same letters.
+    await f.page.locator('#tag-list button', { hasText: '#travelling' }).click();
+    assert.equal(await f.page.locator('#q').inputValue(), '#travelling');
+    assert.deepEqual(await listed(f.page), ['Log.md']);
+    await f.page.locator('#tag-list button', { hasText: '#travel 2' }).click();
+    assert.deepEqual((await listed(f.page)).sort(), ['Log.md', 'Plan.md']);
+    await f.page.locator('#q').fill('#work');
+    assert.deepEqual(await listed(f.page), ['Plan.md']);
+    // Clicking a tag in a note searches for it.
+    await f.page.locator('#q').fill('');
+    await f.page.locator('#ed .cm-tag', { hasText: '#travelling' }).click();
+    assert.equal(await f.page.locator('#q').inputValue(), '#travelling');
+
+    // Typing # suggests tags already in use.
+    await f.page.evaluate(() => editor.focus(true));
+    await f.page.keyboard.type(' #wo');
+    await f.page.locator('#sug div.sel').waitFor();
+    assert.equal(await f.page.locator('#sug div.sel').textContent(), '#work/q4');
+    await f.page.keyboard.press('Enter');
+    assert.equal(await editorText(f.page), '#travel notes #travelling #work/q4 ');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

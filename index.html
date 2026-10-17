@@ -138,6 +138,14 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #cmd-list div.none{color:var(--mute);cursor:default}
 #cmd-list kbd{margin-left:auto;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;opacity:.7}
 #back{display:none}
+#tags{border-top:1px solid var(--border);padding:6px 10px 0;font-size:13px}
+#tags summary{cursor:pointer;color:var(--mute);font-weight:600}
+#tag-list{display:flex;flex-wrap:wrap;gap:4px;max-height:25vh;overflow:auto;padding:6px 0}
+#tag-list .tag{padding:1px 8px;border-radius:12px;font-size:13px;background:var(--bg)}
+#tag-list .tag.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+#tag-list .n{opacity:.65;font-size:11px}
+#tag-list .none{color:var(--mute)}
+#ed .cm-tag{color:var(--accent);background:rgba(124,92,255,.12);border-radius:10px;padding:0 4px;cursor:pointer}
 #trash{margin:4px 6px;background:none;border-color:transparent;text-align:left;color:var(--mute)}
 #trash:hover{border-color:var(--border);color:var(--fg)}
 #dlg-hist{width:min(820px,94vw)}
@@ -215,6 +223,7 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="new" title="New note (Alt+N)">＋</button>
   </div>
   <div id="list"></div>
+  <details id="tags"><summary id="tags-sum">Tags</summary><div id="tag-list"></div></details>
   <button id="trash" title="Deleted notes">🗑 Trash</button>
   <div id="status">Local only</div>
 </aside>
