@@ -4,23 +4,31 @@ const SYNC_URL = 'https://vault-sync-01.chriscleven.workers.dev';
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const baseName = p => p.replace(/^.*\//, '').replace(/\.md$/i, '');
+const fileName = p => p.replace(/^.*\//, '');
+// Images sync and embed like Obsidian attachments. Other file types stay in GitHub only.
+const IMAGE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp', svg: 'image/svg+xml' };
+const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/svg+xml': 'svg' };
 
 /* ---------- encrypted device storage ---------- */
 const DB = {
   async all() { const epoch = Auth.ensure(); const result = await Auth.store.all(); Auth.ensure(epoch); return result; },
   async put(note) { const epoch = Auth.ensure(); await Auth.store.put(note); Auth.ensure(epoch); },
   async del(path) { const epoch = Auth.ensure(); await Auth.store.del(path); Auth.ensure(epoch); },
+  async files() { const epoch = Auth.ensure(); const result = await Auth.store.allFiles(); Auth.ensure(epoch); return result; },
   async replace() {
     const epoch = Auth.ensure();
     Auth.store.records = new Map([...notes].map(([path, note]) => [path, structuredClone(note)]));
+    Auth.store.files = new Map([...files].map(([path, file]) => [path, structuredClone(file)]));
     await Auth.store.persist(); Auth.ensure(epoch);
   }
 };
 
 /* ---------- state ---------- */
 const notes = new Map();   // path -> {path, content, mtime, sha, dirty, deleted}
+const files = new Map();   // path -> {path, id, size, mtime, sha, dirty}; bytes are encrypted separately by id
 let cur = null;            // current path
-let index = { byPath: new Map(), byBase: new Map() };
+let index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map() };
 
 /* ---------- spaces ---------- */
 // A space is a top-level folder listed in .vault/spaces.json. Main ('') holds every note outside those folders.
@@ -63,12 +71,32 @@ function mergeSpaces(local, remote) {
 
 function rebuildIndex() {
   loadSpaces();
-  index = { byPath: new Map(), byBase: new Map() };
+  index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map() };
   for (const n of live().sort((a, b) => a.path.length - b.path.length)) {
     index.byPath.set(rel(n.path).toLowerCase(), n.path);
     const b = baseName(n.path).toLowerCase();
     if (!index.byBase.has(b)) index.byBase.set(b, n.path);
   }
+  for (const f of liveFiles().sort((a, b) => a.path.length - b.path.length)) {
+    index.fileByPath.set(rel(f.path).toLowerCase(), f.path);
+    const b = fileName(f.path).toLowerCase();
+    if (!index.fileByBase.has(b)) index.fileByBase.set(b, f.path);
+  }
+}
+const liveFiles = () => [...files.values()].filter(f => spaceOf(f.path) === space);
+// Find an attachment from a note: relative to the note's folder, then the space root, then by file name anywhere.
+function resolveFile(target, from = cur) {
+  let t = target.trim().replace(/^<(.*)>$/, '$1');
+  if (!t || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(t)) return null;
+  try { t = decodeURIComponent(t); } catch {}
+  t = t.replace(/^\.?\/+/, '').toLowerCase();
+  const join = parts => {
+    const out = [];
+    for (const s of parts.split('/')) { if (s === '..') out.pop(); else if (s && s !== '.') out.push(s); }
+    return out.join('/');
+  };
+  const dir = from ? rel(from).replace(/[^/]*$/, '').toLowerCase() : '';
+  return index.fileByPath.get(join(dir + t)) || index.fileByPath.get(join(t)) || index.fileByBase.get(t.replace(/^.*\//, '')) || null;
 }
 function resolve(target) {
   const t = target.trim().toLowerCase().replace(/\.md$/, '');
@@ -77,21 +105,49 @@ function resolve(target) {
 }
 
 /* ---------- markdown ---------- */
+const imgTag = (path, alt, size) => `<img class="att" data-att="${esc(path)}" alt="${esc(alt)}"` +
+  (size ? ` width="${size[1]}"` + (size[2] ? ` height="${size[2]}"` : '') : '') + '>';
+const missingImg = name => `<span class="att missing" title="Image not found">${esc(name)}</span>`;
 marked.use({
   gfm: true, breaks: true,
+  renderer: {
+    // Local Markdown images show the encrypted copy on this device; web images keep the default renderer.
+    image(href, title, text) {
+      if (!href || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(href)) return false;
+      const p = resolveFile(href);
+      if (p) return imgTag(p, text || '');
+      return IMAGE.test(href) ? missingImg(text || href) : false;
+    }
+  },
   extensions: [{
+    // ![[image.png]], ![[image.png|300]] or ![[image.png|300x200]]
+    name: 'embed', level: 'inline',
+    start(src) { return src.indexOf('![['); },
+    tokenizer(src) {
+      const m = /^!\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
+      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), text: (m[2] || '').trim() };
+    },
+    renderer(t) {
+      if (!IMAGE.test(t.target)) return wikilinkHTML(t.target, t.text || t.target);
+      const p = resolveFile(t.target), size = /^(\d+)(?:x(\d+))?$/.exec(t.text);
+      return p ? imgTag(p, size ? fileName(t.target) : t.text || fileName(t.target), size) : missingImg(t.target);
+    }
+  }, {
     name: 'wikilink', level: 'inline',
     start(src) { return src.indexOf('[['); },
     tokenizer(src) {
       const m = /^\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
       if (m) return { type: 'wikilink', raw: m[0], target: m[1].trim(), text: (m[2] || m[1]).trim() };
     },
-    renderer(t) {
-      const ok = resolve(t.target);
-      return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(t.target)}">${esc(t.text)}</a>`;
-    }
+    renderer(t) { return wikilinkHTML(t.target, t.text); }
   }]
 });
+function wikilinkHTML(target, text) {
+  const att = IMAGE.test(target) && resolveFile(target);
+  if (att) return `<a class="wikilink" data-att="${esc(att)}">${esc(text)}</a>`;
+  const ok = resolve(target);
+  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}">${esc(text)}</a>`;
+}
 DOMPurify.addHook('afterSanitizeAttributes', node => {
   if (node.tagName === 'A' && node.getAttribute('href')) {
     node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer');
@@ -100,6 +156,32 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
 function renderPreview() {
   const n = notes.get(cur);
   $('#pv').innerHTML = n ? DOMPurify.sanitize(marked.parse(n.content)) : '';
+  loadImages();
+}
+// Decrypted images are shown through object URLs that live in memory only and are revoked on lock.
+let urls = new Map();      // attachment id -> Promise<object URL>
+function attachmentURL(f) {
+  if (!urls.has(f.id)) {
+    const epoch = Auth.epoch;
+    urls.set(f.id, Auth.store.getFile(f.id).then(bytes => {
+      if (epoch !== Auth.epoch) throw new Error('Vault is locked.');
+      return URL.createObjectURL(new Blob([bytes], { type: MIME[f.path.replace(/^.*\./, '').toLowerCase()] || 'application/octet-stream' }));
+    }));
+    urls.get(f.id).catch(() => urls.delete(f.id));
+  }
+  return urls.get(f.id);
+}
+function loadImages() {
+  const epoch = Auth.epoch;
+  for (const img of $('#pv').querySelectorAll('img[data-att]')) {
+    const f = files.get(img.dataset.att); if (!f) continue;
+    attachmentURL(f).then(u => { if (epoch === Auth.epoch && img.isConnected) img.src = u; })
+      .catch(() => { if (epoch === Auth.epoch && img.isConnected) img.outerHTML = missingImg(fileName(f.path)); });
+  }
+}
+function revokeImages() {
+  for (const u of urls.values()) u.then(URL.revokeObjectURL, () => {});
+  urls = new Map();
 }
 
 /* ---------- persistence ---------- */
@@ -278,10 +360,86 @@ ta.addEventListener('input', () => {
 $('#pv').addEventListener('click', async e => {
   const a = e.target.closest('a.wikilink'); if (!a) return;
   e.preventDefault();
+  if (a.dataset.att) { const f = files.get(a.dataset.att); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); return; }
   const t = a.dataset.target, p = resolve(t);
   if (p) await openNote(p); else await createNote(t);
 });
 $('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
+
+/* images: paste, drop or pick; saved to attachments/ in the note's space */
+const MAX_SIDE = 2000, MAX_BYTES = 20 * 1024 * 1024;
+// Scale photos down to MAX_SIDE. Large or scaled images are re-encoded: JPEG for photos, WebP where
+// transparency may matter (PNG if the browser can't write WebP). GIF and SVG are kept as they are.
+async function shrink(file) {
+  if (!/^image\/(jpeg|png|webp|heic|heif|bmp|avif)$/i.test(file.type)) return file;
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch { return file; }
+  const scale = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  if (scale === 1 && file.size <= 1024 * 1024 && EXT[file.type]) { bmp.close(); return file; }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bmp.width * scale)); canvas.height = Math.max(1, Math.round(bmp.height * scale));
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height); bmp.close();
+  const alpha = /^image\/(png|webp)$/i.test(file.type);
+  const out = await new Promise(r => canvas.toBlob(r, alpha ? 'image/webp' : 'image/jpeg', alpha ? 0.9 : 0.85));
+  canvas.width = canvas.height = 0;
+  return out && EXT[out.type] && (scale < 1 || out.size < file.size || !EXT[file.type]) ? out : file;
+}
+function attachmentPath(name, ext, folder) {
+  const dir = (folder ? folder + '/' : '') + 'attachments/';
+  const stem = name.replace(/\.[^.]*$/, '').replace(/[\\/<>:"|?*#^[\]]/g, '').trim() || 'image';
+  const taken = p => [...files.values()].some(f => spaceOf(f.path) === folder && fileName(f.path).toLowerCase() === fileName(p).toLowerCase());
+  let p = dir + stem + '.' + ext, i = 1;
+  while (taken(p)) p = dir + stem + ' ' + i++ + '.' + ext;
+  return p;
+}
+// Local time, like Obsidian's "Pasted image 20261017125801.png".
+const stamp = (d = new Date()) => [d.getFullYear(), d.getMonth() + 1, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()]
+  .map((x, i) => String(x).padStart(i ? 2 : 4, '0')).join('');
+async function addImages(list, pasted) {
+  const epoch = Auth.ensure();
+  const n = notes.get(cur); if (!n || !list.length) return;
+  const folder = spaceOf(n.path), links = [], problems = [];
+  setStatus('Adding image' + (list.length > 1 ? 's' : '') + '…');
+  for (const file of list) {
+    const img = await shrink(file); Auth.ensure(epoch);
+    const ext = EXT[img.type];
+    if (!ext) { problems.push(`"${file.name}" isn't a supported image format`); continue; }
+    if (img.size > MAX_BYTES) { problems.push(`"${file.name}" is larger than 20 MB`); continue; }
+    const bytes = new Uint8Array(await img.arrayBuffer());
+    const id = await Auth.store.putFile(bytes); Auth.ensure(epoch);
+    const path = attachmentPath(pasted ? 'Pasted image ' + stamp() : file.name, ext, folder);
+    files.set(path, { path, id, size: bytes.length, mtime: Date.now(), sha: null, dirty: true });
+    links.push(`![[${fileName(path)}]]`);
+  }
+  if (links.length) {
+    await DB.replace(); Auth.ensure(epoch); rebuildIndex();
+    const text = links.join('\n');
+    if (cur === n.path) {
+      ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
+      ta.dispatchEvent(new Event('input'));
+    } else { n.content += (n.content.endsWith('\n') ? '' : '\n') + text; touch(n); }
+    scheduleSync(15000);
+  }
+  setStatus(problems.length ? 'Could not add ' + problems.join('; ') + '.' : `Added ${links.length} image${links.length > 1 ? 's' : ''}`, problems.length > 0);
+}
+const imagesIn = list => [...(list || [])].filter(f => f.type.startsWith('image/'));
+function tryAdd(list, pasted) {
+  addImages(list, pasted).catch(error => { if (Auth.active) setStatus('Could not add image: ' + error.message, true); });
+}
+ta.addEventListener('paste', e => {
+  const list = imagesIn(e.clipboardData?.files);
+  if (list.length) { e.preventDefault(); tryAdd(list, true); }
+});
+ta.addEventListener('dragover', e => { if ([...e.dataTransfer.items].some(i => i.kind === 'file')) e.preventDefault(); });
+ta.addEventListener('drop', e => {
+  if (!e.dataTransfer.files.length) return;
+  // Never let the browser navigate away to a dropped file.
+  e.preventDefault();
+  const list = imagesIn(e.dataTransfer.files);
+  if (list.length) tryAdd(list, false); else setStatus('Only images can be added to notes.', true);
+});
+$('#img').onclick = () => $('#img-in').click();
+$('#img-in').onchange = () => { const list = imagesIn($('#img-in').files); $('#img-in').value = ''; tryAdd(list, false); };
 $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[data-p]'); if (i) openNote(i.dataset.p); });
 $('#q').addEventListener('input', renderList);
 
@@ -294,8 +452,11 @@ function updateSug() {
   if (!m) { box.style.display = 'none'; sugItems = []; return; }
   sugStart = pos - m[1].length - 2;
   const q = m[1].toLowerCase();
-  sugItems = live().filter(n => baseName(n.path).toLowerCase().includes(q) && n.path !== cur)
-    .sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(n => baseName(n.path));
+  // After ![[ suggest images, otherwise notes.
+  sugItems = before[sugStart - 1] === '!'
+    ? liveFiles().filter(f => fileName(f.path).toLowerCase().includes(q)).sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(f => fileName(f.path))
+    : live().filter(n => baseName(n.path).toLowerCase().includes(q) && n.path !== cur)
+      .sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(n => baseName(n.path));
   if (!sugItems.length) { box.style.display = 'none'; return; }
   sugSel = 0; drawSug(); box.style.display = 'block';
 }
@@ -382,8 +543,22 @@ $('#dlg-qs').addEventListener('click', e => { if (e.target === $('#dlg-qs')) $('
 /* ---------- GitHub sync ---------- */
 const getCfg = () => Auth.session;
 const encPath = p => p.split('/').map(encodeURIComponent).join('/');
-const b64e = s => { const b = new TextEncoder().encode(s); let bin = ''; b.forEach(x => bin += String.fromCharCode(x)); return btoa(bin); };
-const b64d = s => { const bin = atob(s.replace(/\s/g, '')); return new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))); };
+const bytesB64 = bytes => {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+const b64bytes = s => Uint8Array.from(atob(s.replace(/\s/g, '')), c => c.charCodeAt(0));
+const b64e = s => bytesB64(new TextEncoder().encode(s));
+const b64d = s => new TextDecoder().decode(b64bytes(s));
+const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+// "folder/name (conflict 2026-10-17).ext", numbered when that name is taken.
+function conflictPath(p, taken, today) {
+  const ext = /\.[^./]+$/.exec(p)?.[0] || '', stem = p.slice(0, p.length - ext.length) + ` (conflict ${today}`;
+  let cp = stem + ')' + ext, suffix = 2;
+  while (taken.has(cp)) cp = stem + ' ' + suffix++ + ')' + ext;
+  return cp;
+}
 async function gh(path, opts = {}) {
   const epoch = Auth.ensure();
   const c = getCfg();
@@ -421,6 +596,9 @@ async function sync() {
     const remote = new Map(tree.tree
       .filter(t => t.type === 'blob' && (t.path === SPACES || /\.md$/i.test(t.path) && !t.path.split('/').some(s => s.startsWith('.'))))
       .map(t => [t.path, t.sha]));
+    const remoteFiles = new Map(tree.tree
+      .filter(t => t.type === 'blob' && IMAGE.test(t.path) && !t.path.split('/').some(s => s.startsWith('.')))
+      .map(t => [t.path, t.sha]));
     const today = new Date().toISOString().slice(0, 10);
 
     // pull: fetch changed blobs a few at a time; each result is applied in memory in one synchronous step
@@ -439,9 +617,7 @@ async function sync() {
       } else if (p === SPACES) {
         l.content = mergeSpaces(l.content, text); l.sha = sha; l.dirty = l.content !== text;
       } else if (l.content !== text) {
-        const stem = p.replace(/\.md$/i, '') + ` (conflict ${today}`;
-        let cp = stem + ').md', suffix = 2;
-        while (notes.has(cp)) cp = stem + ' ' + suffix++ + ').md';
+        const cp = conflictPath(p, notes, today);
         notes.set(cp, { path: cp, content: text, mtime: Date.now(), sha: null, dirty: true });
         l.sha = sha;
       } else { l.sha = sha; l.dirty = false; }
@@ -452,10 +628,38 @@ async function sync() {
       if (l.sha && !l.dirty) { notes.delete(l.path); changed = true; }
       else if (l.sha) { l.sha = null; changed = true; }
     }
+    // pull images: bytes are stored encrypted first, then the vault records them in the same write as the notes
+    let images = 0;
+    await pool([...remoteFiles].filter(([p, sha]) => files.get(p)?.sha !== sha), 4, async ([p, sha]) => {
+      const bytes = b64bytes((await gh('/git/blobs/' + sha)).content);
+      const id = await Auth.store.putFile(bytes); Auth.ensure(epoch);
+      const meta = { path: p, id, size: bytes.length, mtime: Date.now(), sha, dirty: false };
+      const l = files.get(p);
+      changed = true; images++;
+      if (!l || !l.dirty) { files.set(p, meta); return; }
+      const mine = await Auth.store.getFile(l.id); Auth.ensure(epoch);
+      if (sameBytes(mine, bytes)) { l.sha = sha; l.dirty = false; return; }
+      // Both sides changed the image: keep this device's copy and save the remote one beside it.
+      const cp = conflictPath(p, files, today);
+      files.set(cp, { ...meta, path: cp, sha: null, dirty: true }); l.sha = sha;
+    });
+    for (const l of [...files.values()]) {
+      if (remoteFiles.has(l.path)) continue;
+      if (l.sha && !l.dirty) { files.delete(l.path); changed = true; images++; }
+      else if (l.sha) { l.sha = null; changed = true; }
+    }
     // Persist everything pulled as one encrypted write instead of re-encrypting the vault per note.
     if (changed) { await DB.replace(); changed = false; }
-    // push
+    // push images before notes, so another device never syncs a note whose new image isn't uploaded yet
     let pushed = 0;
+    for (const l of [...files.values()]) {
+      if (!l.dirty && l.sha) continue;
+      const sent = l.id, bytes = await Auth.store.getFile(sent); Auth.ensure(epoch);
+      const body = { message: (l.sha ? 'Update ' : 'Add ') + l.path, content: bytesB64(bytes), branch: c.branch || 'main' };
+      if (l.sha) body.sha = l.sha;
+      const res = await gh('/contents/' + encPath(l.path), { method: 'PUT', body: JSON.stringify(body) });
+      l.sha = res.content.sha; l.dirty = l.id !== sent; changed = true; pushed++;
+    }
     for (const l of [...notes.values()]) {
       if (l.deleted) {
         if (remote.has(l.path)) {
@@ -483,6 +687,7 @@ async function sync() {
       // Follow the open note if another device created or removed the space it belongs to.
       if (spaceOf(cur) !== space) { space = spaceOf(cur); rebuildIndex(); }
       showPulled(notes.get(cur));
+      if (images) renderPreview();
     }
     renderSpace(); renderList(); renderBacklinks();
     setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
@@ -675,10 +880,10 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - [ ] Try a task item
 `;
 const App = {
-  snapshot() { return { notes: structuredClone([...notes.values()]), last: structuredClone(Auth.store.last) }; },
+  snapshot() { return { notes: structuredClone([...notes.values()]), files: structuredClone([...files.values()]), last: structuredClone(Auth.store.last) }; },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT); clearTimeout(rpT);
-    notes.clear(); cur = null; space = ''; rebuildIndex(); syncing = null;
+    notes.clear(); files.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     $('#ta').value = ''; $('#pv').replaceChildren(); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
@@ -692,6 +897,7 @@ const App = {
   },
   async open() {
     for (const note of await DB.all()) notes.set(note.path, note);
+    for (const file of await DB.files()) files.set(file.path, file);
     space = ''; rebuildIndex();
     // Older versions stored only the last note's path.
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;

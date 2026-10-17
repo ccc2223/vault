@@ -20,6 +20,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
+- Images: paste, drop or pick them (🖼); `![[image.png]]`, `![[image.png|300]]` and `![](attachments/image.png)` embeds
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
@@ -38,7 +39,14 @@ Spaces are separate sets of notes, like Obsidian vaults. Switch, create, rename 
 
 No Worker or Cloudflare changes are needed. A device still running an older Vault shows other spaces' notes as ordinary folders until it updates.
 
-## Deploy
+## Images
+
+- Paste or drop an image into the editor, or use 🖼 (on phones it can open the camera). Vault saves it to `attachments/` in the current space and inserts `![[name.png]]`. Pasted images are named like Obsidian's, `Pasted image 20261017125801.png`.
+- Photos are scaled down to 2000px on the longest side. Large or scaled images are re-encoded: JPEG for photos, WebP for PNG/WebP (which may have transparency). GIF and SVG are kept as they are. The limit is 20 MB per image.
+- Embeds resolve relative to the note, then the space root, then by file name, so moved notes keep their images. Type `![[` to autocomplete image names.
+- Every device downloads all images (PNG, JPEG, GIF, WebP, AVIF, BMP, SVG) in its spaces, so they work offline. Images are stored encrypted on the device, one record per image, under the same password; names and paths live in the encrypted vault. Decrypted copies exist only in memory while unlocked.
+- Images sync like notes: one commit per image, uploaded before the notes that embed them. If both sides changed the same image, this device's copy is kept and the other is saved beside it as a conflict copy. Deleting an image in GitHub deletes it here. Vault doesn't delete images when you remove an embed.
+
 
 ### App
 
@@ -92,7 +100,7 @@ A failed change keeps the existing encrypted vault. Changing a server password c
 
 Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. Settings lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
 
-If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note produces one GitHub commit; images and attachments are not supported yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
+If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note or image produces one GitHub commit; other attachment types (PDFs, audio) are not synced yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
 
 ## Development and checks
 
