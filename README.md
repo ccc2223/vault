@@ -17,6 +17,8 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 ## Features
 
 - One Obsidian-style editor with live preview: notes look rendered, and Markdown symbols only show where you're editing. Click links to open them and task boxes to tick them. Ctrl/Cmd+E switches to the plain Markdown source and back
+- Tables edit cell by cell like Obsidian: click a cell to edit it, Tab and Enter move between cells and add rows, the + buttons add rows and columns, and right-click a cell to insert, delete or align rows and columns
+- Code blocks show their language and a Copy button, are highlighted for common languages (```js, ```python, ```bash, ```sql and more), and stay editable in place
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
