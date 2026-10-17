@@ -527,6 +527,42 @@ test('live preview hides Markdown away from the cursor; links, tasks, autocomple
 const spacesFile = spaces => JSON.stringify({ version: 1, spaces }, null, 2) + '\n';
 const listed = page => page.locator('#list .item[data-p]').evaluateAll(items => items.map(i => i.dataset.p));
 
+test('the sidebar shows notes in a collapsible folder tree, folders first and numbers in order', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      for (const name of ['Review/10 Later', 'Review/2 Sooner', 'Review/Deep/Inner', 'Archive/Old', 'Zebra']) await createNote(name, 'x');
+      await openNote('Zebra.md');
+    });
+    const rows = () => f.page.locator('#list > *, #list .kids > *').evaluateAll(els =>
+      els.filter(e => e.matches('.dir, .item')).map(e => e.dataset.d ? e.dataset.d + '/' : e.dataset.p));
+    // Creating a note opened its folders; collapse them all and the tree shows only top-level rows.
+    for (const d of ['Review/Deep', 'Review', 'Archive']) await f.page.locator(`#list .dir[data-d="${d}"]`).click();
+    assert.deepEqual(await rows(), ['Archive/', 'Review/', 'Secret draft.md', 'Zebra.md']);
+    await f.page.locator('#list .dir[data-d="Review"]').click();
+    assert.equal(await f.page.locator('#list .dir[data-d="Review"]').getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(await f.page.locator('#list .dir[data-d="Review"] + .kids > *').evaluateAll(els => els.map(e => e.dataset.d || e.dataset.p)),
+      ['Review/Deep', 'Review/2 Sooner.md', 'Review/10 Later.md']);
+    await f.page.locator('#list .dir[data-d="Review"]').press('ArrowLeft');
+    assert.equal(await f.page.locator('#list .item[data-p="Review/2 Sooner.md"]').count(), 0);
+    // Opening a note elsewhere reveals its folders; searching lists matches flat with their folder.
+    await f.page.evaluate(() => openNote('Review/Deep/Inner.md'));
+    assert.equal(await f.page.locator('#list .item.cur').getAttribute('data-p'), 'Review/Deep/Inner.md');
+    await f.page.locator('#q').fill('inner');
+    assert.equal(await f.page.locator('#list .dir').count(), 0);
+    assert.equal(await f.page.locator('#list .item .f').textContent(), 'Review/Deep');
+    await f.page.locator('#q').fill('');
+    // Which folders are open is kept with the encrypted vault.
+    assert.deepEqual((await f.page.evaluate(() => Auth.store.last.folders)).sort(), ['Review', 'Review/Deep']);
+    // A folder's menu adds a note inside it.
+    await f.page.locator('#list .dir[data-d="Archive"]').click({ button: 'right' });
+    await f.page.locator('#ctx button', { hasText: 'New note in this folder' }).click();
+    await f.page.waitForFunction(() => /^Archive\/.+ note 1\.md$/.test(cur));
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
 test('spaces keep notes, links and search separate, store notes in their folder, and reopen where you were', async () => {
   const f = await fixture();
   try {
@@ -544,7 +580,7 @@ test('spaces keep notes, links and search separate, store notes in their folder,
     assert.equal(await f.page.locator('#ed .wikilink:not(.missing)').textContent(), 'Home');
     assert.equal(await f.page.locator('#ed .wikilink.missing').textContent(), 'Secret draft');
     assert.deepEqual((await listed(f.page)).sort(), ['Work/Home.md', 'Work/Projects/Plan.md']);
-    assert.equal(await f.page.locator('#list .item .f').textContent(), 'Projects');
+    assert.equal(await f.page.locator('#list .dir[data-d="Work/Projects"] .t').textContent(), 'Projects');
     await f.page.locator('#q').fill('device-only');
     assert.deepEqual(await listed(f.page), []);
     await f.page.locator('#q').fill('');
@@ -595,6 +631,9 @@ test('a new device picks up spaces; a folder becomes a space without moving file
 
     await f.page.evaluate(() => removeSpace('Projects'));
     assert.equal(await f.page.evaluate(() => space), '');
+    // Its notes show in Main under the (closed) folder.
+    assert.deepEqual((await listed(f.page)).sort(), ['Root.md', 'Welcome.md']);
+    await f.page.locator('#list .dir[data-d="Projects"]').click();
     assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md', 'Root.md', 'Welcome.md']);
     await f.page.evaluate(() => App.sync()); await settled(f.page);
     assert.equal(f.remote.has('Projects/a.md'), true);

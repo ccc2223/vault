@@ -23,7 +23,8 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Heading links: `[[Note#Heading]]` opens the note at that heading, `[[#Heading]]` jumps within the note, and typing `#` after a note name in `[[` suggests its headings
 - Outline (≡): the note's headings, indented by level, with the one you're in highlighted. Click one to jump there
-- Backlinks, full-text search, quick switcher and folders via `folder/name`
+- Backlinks, full-text search and quick switcher
+- Folders: the sidebar shows notes in a folder tree like Obsidian's, folders first, with collapsible subfolders. Type `folder/sub/name` as a note's name (or edit the title) to put it in a folder, or right-click a folder for **New note in this folder**. Opening a note opens the folders above it, and which folders are open is saved with your encrypted notes. Searching lists matches flat with their folder
 - `#tags`, highlighted in the editor: click one, or pick it under **Tags** in the sidebar (with counts), to list its notes. Searching `#tag` also finds nested tags like `#tag/sub`, and typing `#` suggests tags you already use
 - Spaces: separate sets of notes, each with its own links, search and backlinks
 - Images: paste, drop or pick them (🖼); `![[image.png]]`, `![[image.png|300]]` and `![](attachments/image.png)` embeds

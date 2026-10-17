@@ -281,6 +281,46 @@ function snippet(content, tokens) {
   for (const t of tokens) h = h.replace(new RegExp(t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), m => `<mark>${m}</mark>`);
   return h;
 }
+/* ---------- folder tree ---------- */
+// Folders open in the sidebar, by full repository path. Saved with the encrypted vault, like the last note.
+const expanded = new Set();
+const byName = (a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+const parentDirs = path => path.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'));
+const noteRow = (n, extra = '') => `<div class="item${n.path === cur ? ' cur' : ''}" data-p="${esc(n.path)}">
+      <div class="t">${esc(baseName(n.path))}${n.dirty ? ' •' : ''}</div>${extra}</div>`;
+// Folders first, then notes, each sorted by name with numbers in order ("2" before "10"), like Obsidian.
+function treeHTML(list) {
+  const root = { dirs: new Map(), notes: [] };
+  for (const n of list) {
+    let node = root;
+    for (const dir of parentDirs(n.path).filter(d => d.length > space.length)) {
+      if (!node.dirs.has(dir)) node.dirs.set(dir, { dirs: new Map(), notes: [] });
+      node = node.dirs.get(dir);
+    }
+    node.notes.push(n);
+  }
+  const html = node => [...node.dirs].sort(([a], [b]) => byName(fileName(a), fileName(b))).map(([dir, child]) => {
+    const open = expanded.has(dir);
+    return `<div class="dir${open ? ' open' : ''}" data-d="${esc(dir)}" role="button" tabindex="0" aria-expanded="${open}">
+      <svg class="ic" aria-hidden="true"><use href="#i-chev"/></svg><span class="t">${esc(fileName(dir))}</span></div>` +
+      (open ? `<div class="kids">${html(child)}</div>` : '');
+  }).join('') + node.notes.sort((a, b) => byName(baseName(a.path), baseName(b.path))).map(n => noteRow(n)).join('');
+  return html(root);
+}
+function saveFolders() {
+  // Forget folders that no longer hold notes.
+  const dirs = new Set([...notes.values()].filter(isNote).flatMap(n => parentDirs(n.path)));
+  for (const d of expanded) if (!dirs.has(d)) expanded.delete(d);
+  if (Auth.store.last && typeof Auth.store.last === 'object') Auth.store.last.folders = [...expanded];
+}
+function toggleFolder(dir, open = !expanded.has(dir)) {
+  if (open) expanded.add(dir); else expanded.delete(dir);
+  saveFolders(); renderList();
+  $(`#list .dir[data-d="${CSS.escape(dir)}"]`)?.focus();
+}
+// Open the folders above a note so it shows in the tree.
+function revealNote(path) { for (const d of parentDirs(path)) if (d.length > spaceOf(path).length) expanded.add(d); saveFolders(); }
+
 function renderList() {
   const q = $('#q').value.trim().toLowerCase();
   const tokens = q.split(/\s+/).filter(Boolean);
@@ -298,16 +338,14 @@ function renderList() {
     });
     arr = arr.slice(0, 100);
     arr.forEach(n => snips.set(n.path, snippet(n.content, tokens)));
-  } else {
-    arr.sort((a, b) => a.path.localeCompare(b.path));
   }
-  $('#list').innerHTML = arr.map(n => {
+  // Searching lists matching notes flat with their folder; otherwise notes sit in a folder tree.
+  $('#list').classList.toggle('tree', !tokens.length);
+  $('#list').innerHTML = (tokens.length ? arr.map(n => {
     const r = rel(n.path), folder = r.includes('/') ? r.replace(/\/[^/]*$/, '') : '';
-    return `<div class="item${n.path === cur ? ' cur' : ''}" data-p="${esc(n.path)}">
-      <div class="t">${esc(baseName(n.path))}${n.dirty ? ' •' : ''}</div>
-      ${folder ? `<div class="f">${esc(folder)}</div>` : ''}
-      ${snips.get(n.path) ? `<div class="s">${snips.get(n.path)}</div>` : ''}</div>`;
-  }).join('') || '<div class="item" style="color:var(--mute)">No notes</div>';
+    return noteRow(n, `${folder ? `<div class="f">${esc(folder)}</div>` : ''}
+      ${snips.get(n.path) ? `<div class="s">${snips.get(n.path)}</div>` : ''}`);
+  }).join('') : treeHTML(arr)) || '<div class="item" style="color:var(--mute)">No notes</div>';
   renderTags(tokens);
   const open = live().reduce((sum, n) => sum + tasksOf(n.content).filter(t => !t.done).length, 0);
   $('#tasks-n').textContent = open; $('#tasks-n').hidden = !open;
@@ -364,7 +402,8 @@ async function openNote(path) {
   cur = path;
   // Remember the current space and the last note in each space (stored encrypted with the notes).
   const last = Auth.store.last && typeof Auth.store.last === 'object' ? Auth.store.last : { notes: {} };
-  Auth.store.last = { space, notes: { ...last.notes, [space]: path } };
+  Auth.store.last = { ...last, space, notes: { ...last.notes, [space]: path } };
+  revealNote(path);
   editor.load(notes.get(path).content);
   scheduleOutline();
   $('#title').textContent = baseName(path);
@@ -472,7 +511,17 @@ const editor = LiveEditor.create($('#ed'), {
   tag: tag => searchTag(tag),
   fileName, renderInline
 });
-$('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
+$('#list').addEventListener('click', e => {
+  const d = e.target.closest('.dir[data-d]'); if (d) { toggleFolder(d.dataset.d); return; }
+  const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p);
+});
+// Folder rows: Enter or Space toggles, right arrow opens, left arrow closes.
+$('#list').addEventListener('keydown', e => {
+  const d = e.target.closest('.dir[data-d]'); if (!d) return;
+  const open = { Enter: undefined, ' ': undefined, ArrowRight: true, ArrowLeft: false };
+  if (!(e.key in open)) return;
+  e.preventDefault(); toggleFolder(d.dataset.d, open[e.key]);
+});
 
 /* images: paste, drop or pick; saved to attachments/ in the note's space */
 const MAX_SIDE = 2000, MAX_BYTES = 20 * 1024 * 1024;
@@ -873,11 +922,11 @@ async function openToday() {
   await createNote(DAILY + '/' + day, fromTemplate ? fillTemplate(template.content, day, d) || '\n' : `# ${day}\n\n`);
 }
 // A placeholder name for a new note (e.g. "31.07.26 note 1"), to type over in the title.
-function untitled() {
-  const day = formatDate(new Date(), 'DD.MM.YY');
+function untitled(folder = '') {
+  const day = formatDate(new Date(), 'DD.MM.YY'), dir = folder ? folder + '/' : '';
   let i = 1;
-  while ([...notes.values()].some(n => !n.deleted && n.path.toLowerCase() === notePath(`${day} note ${i}`)?.toLowerCase())) i++;
-  return `${day} note ${i}`;
+  while ([...notes.values()].some(n => !n.deleted && n.path.toLowerCase() === notePath(`${dir}${day} note ${i}`)?.toLowerCase())) i++;
+  return `${dir}${day} note ${i}`;
 }
 function pickTemplate(use) {
   openCommands(templates().map(n => ({ name: rel(n.path).slice(TEMPLATES.length + 1).replace(/\.md$/i, ''), run: () => use(n) })),
@@ -1244,6 +1293,11 @@ $('#change-save').onclick = async () => {
 /* ---------- toolbar / shortcuts ---------- */
 // New note: create it with a placeholder name and put the cursor in the title to type over it.
 $('#new').onclick = async () => { if (await createNote(untitled())) $('#title').focus(); };
+// contextmenu.js loads after this file.
+addEventListener('DOMContentLoaded', () => ContextMenu.provide('folder', ctx => [
+  { label: 'New note in this folder', run: async () => { if (await createNote(untitled(space ? ctx.path.slice(space.length + 1) : ctx.path))) $('#title').focus(); } },
+  { label: expanded.has(ctx.path) ? 'Collapse' : 'Expand', run: () => toggleFolder(ctx.path) }
+]));
 $('#today').onclick = () => openToday();
 {
   // Click/tap the title to edit it in place; Enter or blur commits, Escape cancels.
@@ -1343,7 +1397,7 @@ const App = {
   },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT);
-    notes.clear(); files.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
+    notes.clear(); files.clear(); expanded.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     editor.load(''); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
@@ -1364,6 +1418,7 @@ const App = {
     // Older versions stored only the last note's path.
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;
     if (legacy || !last) Auth.store.last = { space: '', notes: {} };
+    for (const d of Array.isArray(Auth.store.last.folders) ? Auth.store.last.folders : []) if (typeof d === 'string') expanded.add(d);
     if (![...notes.values()].some(isNote)) await createNote('Welcome', WELCOME);
     // Older versions stored edit, split or view; all of them now open in live preview.
     setSource(localStorage.getItem('vault.mode') === 'source');
