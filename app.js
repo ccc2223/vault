@@ -546,12 +546,23 @@ async function createSpace(name) {
   $('#dlg-spaces').close();
   await switchSpace(folder);
 }
-async function renameSpace(folder) {
+// Edit the space name in place (the GitHub folder keeps its name); Enter or blur saves, Escape cancels.
+function renameSpace(folder, row) {
   Auth.ensure();
-  const name = prompt('Rename space (the GitHub folder keeps its name):', spaceName(folder))?.trim();
-  if (!name) return;
-  await saveSpaces(spaceList.map(s => s.folder === folder ? { ...s, name, updated: Date.now() } : s));
-  drawSpaces();
+  const go = row.querySelector('.go');
+  const input = Object.assign(document.createElement('input'), { value: spaceName(folder), className: 'go', maxLength: 60 });
+  go.replaceWith(input); input.focus(); input.select();
+  let done = false;
+  const finish = async save => {
+    if (done) return; done = true;
+    const name = input.value.trim();
+    try {
+      if (save && name && name !== spaceName(folder)) await saveSpaces(spaceList.map(s => s.folder === folder ? { ...s, name, updated: Date.now() } : s));
+    } catch (error) { if (Auth.active) $('#sp-err').textContent = error.message; }
+    if (Auth.active) drawSpaces();
+  };
+  input.onkeydown = e => { if (e.key === 'Enter') finish(true); else if (e.key === 'Escape') finish(false); };
+  input.onblur = () => finish(true);
 }
 async function removeSpace(folder) {
   Auth.ensure();
@@ -586,7 +597,7 @@ $('#sp-list').addEventListener('click', async e => {
   $('#sp-err').textContent = '';
   try {
     if (e.target.closest('.go')) { $('#dlg-spaces').close(); await switchSpace(folder); }
-    else if (e.target.closest('.ren')) await renameSpace(folder);
+    else if (e.target.closest('.ren')) renameSpace(folder, row);
     else if (e.target.closest('.rm')) await removeSpace(folder);
   } catch (error) { if (Auth.active) $('#sp-err').textContent = error.message; }
 });
@@ -632,7 +643,14 @@ $('#change-save').onclick = async () => {
 };
 
 /* ---------- toolbar / shortcuts ---------- */
-$('#new').onclick = () => { const n = prompt('New note name (use folder/name for folders):'); if (n) createNote(n); };
+// New note: create it with a placeholder name (e.g. "31.07.26 note 1") and put the cursor in the title to type over it.
+$('#new').onclick = async () => {
+  const d = new Date(), pad = x => String(x).padStart(2, '0');
+  const day = `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${pad(d.getFullYear() % 100)}`;
+  let i = 1;
+  while ([...notes.values()].some(n => !n.deleted && n.path.toLowerCase() === notePath(`${day} note ${i}`)?.toLowerCase())) i++;
+  if (await createNote(`${day} note ${i}`)) $('#title').focus();
+};
 {
   // Click/tap the title to edit it in place; Enter or blur commits, Escape cancels.
   const t = $('#title');
