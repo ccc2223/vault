@@ -16,7 +16,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 
 ## Features
 
-- Markdown editor and live preview: Edit / Split / View
+- One Obsidian-style editor with live preview: notes look rendered, and Markdown symbols only show where you're editing. Click links to open them and task boxes to tick them. Ctrl/Cmd+E switches to the plain Markdown source and back
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
@@ -24,7 +24,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
-Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E edit/view · Ctrl/Cmd+Shift+F search · Alt+N new note
+Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E live preview/source · Ctrl/Cmd+Shift+F search · Alt+N new note
 
 ## Spaces
 
@@ -50,7 +50,7 @@ No Worker or Cloudflare changes are needed. A device still running an older Vaul
 
 ### App
 
-Host this repository with GitHub Pages (`main`, root), or another static HTTPS host. Include `index.html`, `app.js`, `auth.js`, `secure-store.js`, `vendor/`, `manifest.webmanifest`, `icon.svg` and `sw.js`. There is no deployment build step; bundled libraries are committed. The app requires Web Crypto, IndexedDB and Web Locks in a current browser.
+Host this repository with GitHub Pages (`main`, root), or another static HTTPS host. Include `index.html`, `app.js`, `editor.js`, `auth.js`, `secure-store.js`, `vendor/`, `manifest.webmanifest`, `icon.svg` and `sw.js`. There is no deployment build step; bundled libraries are committed. The app requires Web Crypto, IndexedDB and Web Locks in a current browser.
 
 ### Private notes repo
 
@@ -113,4 +113,4 @@ npm test
 
 Browser regression tests use Chromium, real IndexedDB/Web Crypto, and a mock sync server. Set `CHROMIUM_PATH` to a system Chromium executable if needed. Tests cover authenticated migration, encrypted storage, offline reload, wrong passwords, sign-out, reload locking, one-hour inactivity, tab coordination, interrupted writes, late responses and password rotation. Worker tests cover session duration, old/tampered/expired sessions, revocation, origins and proxy restrictions. No real notes or credentials are used.
 
-When changing app assets, bump the cache version in `sw.js`; its atomic install caches only the public app shell. Vendored library versions and licenses are recorded in `package.json`, `package-lock.json` and `vendor/`.
+When changing app assets, bump the cache version in `sw.js`; its atomic install caches only the public app shell. Vendored library versions and licenses are recorded in `package.json`, `package-lock.json` and `vendor/`. `npm run vendor` also bundles the CodeMirror editor (`scripts/codemirror.mjs`) into `vendor/codemirror.min.js`.

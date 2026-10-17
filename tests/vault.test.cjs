@@ -88,6 +88,7 @@ async function unlock(page, value = password) {
   await page.locator('#unlock-submit').click();
   await page.waitForFunction(() => Auth.active || !!document.getElementById('unlock-error').textContent);
 }
+const editorText = page => page.evaluate(() => editor.text);
 async function settled(page) {
   await page.waitForFunction(() => Auth.active && Auth.store.pending === 0 && syncing === null && saveT === null);
 }
@@ -100,7 +101,7 @@ async function raw(page) {
 }
 async function locked(page) {
   await page.waitForFunction(() => !Auth.active && !Auth.locking && !Auth.lockFailed);
-  assert.equal(await page.locator('#ta').inputValue(), '');
+  assert.equal(await editorText(page), '');
   assert.equal(await page.locator('#list').textContent(), '');
   assert.equal(await page.evaluate(() => Auth.store.key === null && Auth.session === null && notes.size === 0), true);
 }
@@ -109,13 +110,13 @@ test('migration is authenticated, encrypted, preserves drafts, and reload starts
   const f = await fixture();
   try {
     assert.equal(await f.page.locator('#lock-screen').isVisible(), true);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     assert.equal(await f.page.evaluate(() => localStorage.getItem('vault.gh')), null);
     await unlock(f.page, 'wrong password');
     assert.equal((await raw(f.page)).legacy.length, 1);
     assert.equal((await raw(f.page)).sealed, undefined);
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     const stored = await raw(f.page);
     assert.equal(stored.legacy.length, 0);
     const text = JSON.stringify(stored);
@@ -125,9 +126,9 @@ test('migration is authenticated, encrypted, preserves drafts, and reload starts
     await f.page.reload();
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
     assert.equal(await f.page.locator('#lock-screen').isVisible(), true);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
@@ -140,9 +141,9 @@ test('sign out clears UI, keys and credentials; offline unlock still needs the l
     f.state.offline = true;
     await unlock(f.page, 'incorrect');
     assert.equal(await f.page.evaluate(() => Auth.active), false);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.equal(await f.page.evaluate(() => Auth.session), null);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
@@ -153,13 +154,13 @@ test('one-hour idle timeout and suspended-background check lock without erasing 
   try {
     await f.page.clock.install();
     await unlock(f.page); await settled(f.page);
-    await f.page.locator('#ta').fill('Newest unsynced words');
+    await f.page.locator('#ed .cm-content').fill('Newest unsynced words');
     await f.page.clock.fastForward(59 * 60000);
     assert.equal(await f.page.evaluate(() => Auth.active), true);
     await f.page.clock.fastForward(60000); await locked(f.page);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), 'Newest unsynced words');
+    assert.equal(await editorText(f.page), 'Newest unsynced words');
     await f.page.evaluate(() => { Auth.lastActivity = Date.now() - Auth.idleMs; document.dispatchEvent(new Event('visibilitychange')); });
     await locked(f.page);
     assert.deepEqual(f.errors, []);
@@ -176,7 +177,7 @@ test('only one tab can edit; locking in another tab clears the unlocked editor',
     assert.match(await other.locator('#unlock-error').textContent(), /another tab/);
     await other.evaluate(() => Auth.lock()); await locked(f.page);
     await unlock(other); await settled(other);
-    assert.equal(await other.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(other), secret);
     await f.page.evaluate(() => Auth.lock()); await locked(other);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
@@ -192,7 +193,7 @@ test('failed migration keeps plaintext originals intact and can be retried', asy
     assert.equal((await raw(f.page)).sealed, undefined);
     await f.page.evaluate(() => { Auth.store.write = window.realWrite; });
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.equal((await raw(f.page)).legacy.length, 0);
   } finally { await f.context.close(); }
 });
@@ -222,13 +223,13 @@ test('password rotation preserves notes and rejects the previous local password'
       try { await Auth.changePassword('wrong old password', next); return ''; } catch (e) { return e.message; }
     }, f.state.password), /Password update failed/);
     assert.equal((await raw(f.page)).sealed.salt, before.sealed.salt);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
     await f.page.locator('#lock').click(); await locked(f.page);
     await unlock(f.page, password);
     assert.equal(await f.page.evaluate(() => Auth.active), false);
     await unlock(f.page, f.state.password); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
@@ -237,17 +238,17 @@ test('failed lock save hides notes and preserves unsaved text for a successful r
   const f = await fixture();
   try {
     await unlock(f.page); await settled(f.page);
-    await f.page.locator('#ta').fill('Unsaved recovery text');
+    await f.page.locator('#ed .cm-content').fill('Unsaved recovery text');
     await f.page.evaluate(() => { window.realWrite = Auth.store.write; Auth.store.write = async () => { throw new Error('Disk full'); }; });
     await f.page.locator('#lock').click();
     await f.page.waitForFunction(() => Auth.lockFailed && !Auth.locking);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     assert.equal(await f.page.locator('#unlock-submit').isDisabled(), true);
     await f.page.evaluate(() => { Auth.store.write = window.realWrite; });
     await f.page.locator('#retry-lock').click(); await locked(f.page);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), 'Unsaved recovery text');
+    assert.equal(await editorText(f.page), 'Unsaved recovery text');
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
@@ -275,9 +276,9 @@ test('service worker supports offline reload and never caches sync or authentica
     await f.context.setOffline(true);
     await f.page.reload();
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     const cached = await f.page.evaluate(async () => {
       const result = [];
       for (const name of await caches.keys()) for (const r of await (await caches.open(name)).keys()) result.push(r.url);
@@ -307,12 +308,12 @@ test('locking during first encryption waits for migration, then releases keys an
     await f.page.locator('#unlock-submit').click();
     await f.page.waitForFunction(() => !!window.pausedMigration);
     await f.page.evaluate(() => { void Auth.lock(); });
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     await f.page.evaluate(() => window.resumeMigration());
     await locked(f.page);
     assert.equal((await raw(f.page)).legacy.length, 0);
     await unlock(f.page); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
@@ -352,7 +353,7 @@ test('expired cloud sessions stop sync while local notes remain unlocked', async
     assert.equal(f.state.calls.length, requestsBefore);
     assert.equal(await f.page.evaluate(() => Auth.active && Auth.session === null), true);
     assert.match(await f.page.locator('#status').textContent(), /expired/);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret);
+    assert.equal(await editorText(f.page), secret);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
@@ -374,7 +375,7 @@ test('tampered ciphertext cannot be unlocked or overwritten', async () => {
     const before = await raw(f.page);
     await unlock(f.page);
     assert.equal(await f.page.evaluate(() => Auth.active), false);
-    assert.equal(await f.page.locator('#ta').inputValue(), '');
+    assert.equal(await editorText(f.page), '');
     assert.equal((await raw(f.page)).sealed.ciphertext, before.sealed.ciphertext);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
@@ -394,9 +395,9 @@ test('renames, backlinks, sanitized Markdown and deletes still work with encrypt
     assert.equal(f.remote.has('New name.md'), true);
     assert.equal(f.remote.has('Secret draft.md'), false);
     await f.page.evaluate(async () => openNote('Linker.md'));
-    assert.match(await f.page.locator('#ta').inputValue(), /\[\[New name\]\]/);
+    assert.match(await editorText(f.page), /\[\[New name\]\]/);
     assert.equal(await f.page.evaluate(() => window.badHTML), undefined);
-    assert.equal(await f.page.locator('#pv [onerror]').count(), 0);
+    assert.equal(await f.page.locator('#ed [onerror]').count(), 0);
     await f.page.evaluate(async () => { await openNote('New name.md'); window.confirm = () => true; await deleteNote(); await App.sync(); });
     await settled(f.page);
     assert.equal(f.remote.has('New name.md'), false);
@@ -412,9 +413,9 @@ test('pulled edits replace the focused, unedited note so the next keystroke cann
   try {
     await unlock(f.page); await settled(f.page);
     f.remote.set('Secret draft.md', { sha: 'phone-edit', content: 'Edit from phone' });
-    await f.page.locator('#ta').focus();
+    await f.page.locator('#ed .cm-content').focus();
     await f.page.evaluate(() => App.sync()); await settled(f.page);
-    assert.equal(await f.page.locator('#ta').inputValue(), 'Edit from phone');
+    assert.equal(await editorText(f.page), 'Edit from phone');
     await f.page.keyboard.press('End'); await f.page.keyboard.type('!');
     await f.page.evaluate(() => App.sync()); await settled(f.page);
     assert.equal(f.remote.get('Secret draft.md').content, 'Edit from phone!');
@@ -473,6 +474,51 @@ test('first sync persists pulled notes in one encrypted write, and a failed pull
   } finally { await f.context.close(); }
 });
 
+test('live preview hides Markdown away from the cursor; links, tasks, autocomplete and Ctrl/Cmd+E source work', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => createNote('Live', '# Live\n\nSome **bold** and [[Secret draft|the draft]].\n\n- [ ] task\n'));
+    const shownText = () => f.page.locator('#ed .cm-content').textContent();
+    await f.page.evaluate(() => editor.view.contentDOM.blur());
+    assert.equal(await f.page.locator('#ed .cm-h1').textContent(), 'Live');
+    assert.equal(await shownText(), 'LiveSome bold and the draft.task');
+    assert.equal(await f.page.locator('#ed .cm-md-strong').textContent(), 'bold');
+
+    // The element under the cursor shows its Markdown; the rest of the note stays rendered.
+    await f.page.evaluate(() => { editor.view.focus(); editor.view.dispatch({ selection: { anchor: editor.text.indexOf('bold') + 1 } }); });
+    assert.equal(await shownText(), 'LiveSome **bold** and the draft.task');
+
+    // Ctrl/Cmd+E shows the whole source, and the choice is remembered.
+    await f.page.keyboard.press('ControlOrMeta+e');
+    assert.equal(await f.page.locator('#ed .cm-source').count(), 1);
+    assert.match(await shownText(), /^# Live.*\[\[Secret draft\|the draft\]\].*- \[ \] task/);
+    assert.equal(await f.page.evaluate(() => localStorage.getItem('vault.mode')), 'source');
+    await f.page.keyboard.press('ControlOrMeta+e');
+    assert.equal(await f.page.locator('#ed .cm-source').count(), 0);
+    assert.equal(await f.page.evaluate(() => localStorage.getItem('vault.mode')), 'live');
+
+    // Typing: [[ autocompletes note names and Enter continues a list.
+    await f.page.evaluate(() => editor.focus(true));
+    await f.page.keyboard.type('- one');
+    await f.page.keyboard.press('Enter');
+    await f.page.keyboard.type('see [[Secr');
+    await f.page.locator('#sug div.sel').waitFor();
+    assert.equal(await f.page.locator('#sug div.sel').textContent(), 'Secret draft');
+    await f.page.keyboard.press('Enter');
+    assert.equal(await editorText(f.page), '# Live\n\nSome **bold** and [[Secret draft|the draft]].\n\n- [ ] task\n- one\n- see [[Secret draft]]');
+
+    // Task boxes toggle the Markdown, and a rendered link opens its note.
+    await f.page.locator('#ed .cm-task').click();
+    assert.match(await editorText(f.page), /- \[x\] task/);
+    await f.page.locator('#ed .wikilink', { hasText: 'the draft' }).click();
+    await f.page.waitForFunction(() => cur === 'Secret draft.md');
+    await settled(f.page);
+    assert.match(await f.page.evaluate(() => notes.get('Live.md').content), /- \[x\] task\n- one\n- see \[\[Secret draft\]\]$/);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
 const spacesFile = spaces => JSON.stringify({ version: 1, spaces }, null, 2) + '\n';
 const listed = page => page.locator('#list .item[data-p]').evaluateAll(items => items.map(i => i.dataset.p));
 
@@ -488,9 +534,10 @@ test('spaces keep notes, links and search separate, store notes in their folder,
     assert.equal(await f.page.locator('#space-name').textContent(), 'Work');
     assert.equal(await f.page.evaluate(() => cur), 'Work/Home.md');
     await f.page.evaluate(() => createNote('Projects/Plan', '[[Home]] and [[Secret draft]]'));
-    await f.page.evaluate(() => setMode('view'));
-    assert.equal(await f.page.locator('#pv a.wikilink:not(.missing)').textContent(), 'Home');
-    assert.equal(await f.page.locator('#pv a.wikilink.missing').textContent(), 'Secret draft');
+    // Links show as links once the cursor leaves them.
+    await f.page.evaluate(() => editor.view.contentDOM.blur());
+    assert.equal(await f.page.locator('#ed .wikilink:not(.missing)').textContent(), 'Home');
+    assert.equal(await f.page.locator('#ed .wikilink.missing').textContent(), 'Secret draft');
     assert.deepEqual((await listed(f.page)).sort(), ['Work/Home.md', 'Work/Projects/Plan.md']);
     assert.equal(await f.page.locator('#list .item .f').textContent(), 'Projects');
     await f.page.locator('#q').fill('device-only');
@@ -579,7 +626,7 @@ test('space changes from two devices merge instead of creating conflict copies',
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const isImageBytes = b => b.subarray(0, 4).toString('latin1') === 'RIFF' || b.subarray(1, 4).toString('latin1') === 'PNG';
 const shown = (page, n) => page.waitForFunction(n => {
-  const imgs = [...document.querySelectorAll('#pv img.att')];
+  const imgs = [...document.querySelectorAll('#ed img.att')];
   return imgs.length === n && imgs.every(i => i.src.startsWith('blob:') && i.complete && i.naturalWidth > 0);
 }, n);
 
@@ -592,16 +639,16 @@ test('pasted images shrink, stay encrypted on the device, sync to attachments/ a
       const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 3000, 1500); g.fillStyle = '#3c3'; g.fillRect(0, 0, 1500, 750);
       const blob = await new Promise(r => c.toBlob(r, 'image/png'));
       const dt = new DataTransfer(); dt.items.add(new File([blob], 'image.png', { type: 'image/png' }));
-      const ta = document.getElementById('ta'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      editor.focus(true);
+      editor.view.contentDOM.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
     });
     await f.page.waitForFunction(() => /Added 1 image/.test(document.getElementById('status').textContent));
     await settled(f.page);
     const name = await f.page.evaluate(() => [...files.keys()][0]);
     assert.match(name, /^attachments\/Pasted image \d{14}\.(webp|png)$/);
-    assert.equal(await f.page.locator('#ta').inputValue(), secret + `![[${name.slice('attachments/'.length)}]]`);
+    assert.equal(await editorText(f.page), secret + `![[${name.slice('attachments/'.length)}]]`);
     await shown(f.page, 1);
-    assert.equal(await f.page.evaluate(() => document.querySelector('#pv img.att').naturalWidth), 2000);
+    assert.equal(await f.page.evaluate(() => document.querySelector('#ed img.att').naturalWidth), 2000);
 
     // Bytes on the device are ciphertext, and the name only lives inside the sealed vault.
     const head = await f.page.evaluate(() => new Promise(resolve => {
@@ -644,9 +691,9 @@ test('images from GitHub download and embed with Obsidian and Markdown syntax; c
     assert.deepEqual(await f.page.evaluate(() => [...files.keys()]), ['photos/attachments/beach.png']);
     await f.page.evaluate(() => openNote('photos/Trip.md'));
     await shown(f.page, 2);
-    assert.equal(await f.page.locator('#pv img.att').first().getAttribute('width'), '50');
-    assert.equal(await f.page.locator('#pv .att.missing').textContent(), 'gone.png');
-    assert.equal(await f.page.locator('#pv a.wikilink[data-att]').count(), 1);
+    assert.equal(await f.page.locator('#ed img.att').first().getAttribute('width'), '50');
+    assert.equal(await f.page.locator('#ed .att.missing').textContent(), 'gone.png');
+    assert.equal(await f.page.locator('#ed .wikilink[data-att]').count(), 1);
 
     // A new image here and a different one on GitHub under the same name: both are kept.
     await f.page.evaluate(async () => {
@@ -665,7 +712,7 @@ test('images from GitHub download and embed with Obsidian and Markdown syntax; c
     f.remote.delete('photos/attachments/beach.png');
     await f.page.evaluate(() => App.sync()); await settled(f.page);
     assert.equal(await f.page.evaluate(() => files.has('photos/attachments/beach.png')), false);
-    assert.equal(await f.page.locator('#pv .att.missing').count(), 3);
+    assert.equal(await f.page.locator('#ed .att.missing').count(), 3);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
