@@ -23,6 +23,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - Spaces: separate sets of notes, each with its own links, search and backlinks
 - Images: paste, drop or pick them (🖼); `![[image.png]]`, `![[image.png|300]]` and `![](attachments/image.png)` embeds
+- Trash and note history: deleted notes stay in the trash for 30 days, and each note keeps its last 20 versions (🕘)
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
@@ -48,6 +49,14 @@ No Worker or Cloudflare changes are needed. A device still running an older Vaul
 - Embeds resolve relative to the note, then the space root, then by file name, so moved notes keep their images. Type `![[` to autocomplete image names.
 - Every device downloads all images (PNG, JPEG, GIF, WebP, AVIF, BMP, SVG) in its spaces, so they work offline. Images are stored encrypted on the device, one record per image, under the same password; names and paths live in the encrypted vault. Decrypted copies exist only in memory while unlocked.
 - Images sync like notes: one commit per image, uploaded before the notes that embed them. If both sides changed the same image, this device's copy is kept and the other is saved beside it as a conflict copy. Deleting an image in GitHub deletes it here. Vault doesn't delete images when you remove an embed.
+
+
+## Trash and history
+
+- Deleting a note (🗑) moves it to the trash at the bottom of the sidebar. Notes deleted on another device land there too when this device syncs. Open the trash to read a deleted note, restore it under its old name (or beside a note that has taken the name), or delete it forever. Deleted notes are kept for 30 days.
+- 🕘 shows a note's earlier versions. Vault keeps the text an edit replaces, at most once every five minutes per note, and the text a synced change from another device replaces. Restoring a version is an ordinary edit you can undo, and the text it replaces is kept as a version too. Each note keeps its last 20 versions; renaming a note keeps its history.
+- The trash and history stay on this device, encrypted under the same password, one record per version like images. They don't sync, and GitHub only holds the current notes.
+- This release adds a storage area, so close older Vault tabs or windows when it asks.
 
 
 ### App

@@ -848,3 +848,80 @@ test('tables edit cell by cell with rows and columns added; code blocks highligh
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('deleted notes go to the trash and earlier versions come back, encrypted on the device', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    const versions = () => f.page.evaluate(() => Auth.store.history.filter(v => !v.trashed).sort((a, b) => a.time - b.time).map(v => v.why));
+    // Editing keeps the text it replaces, and so does a change pulled from another device.
+    await f.page.locator('#ed .cm-content').fill('Second draft');
+    await settled(f.page);
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    f.remote.set('Secret draft.md', { sha: 'phone', content: 'From phone' });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await editorText(f.page), 'From phone');
+    assert.deepEqual(await versions(), ['edit', 'sync']);
+
+    // Pick the oldest version in the history and restore it; the replaced text is kept as a version too.
+    await f.page.locator('#hist').click();
+    assert.equal(await f.page.locator('#h-list div[data-i]').count(), 2);
+    await f.page.locator('#h-list div[data-i="1"]').click();
+    await f.page.waitForFunction(s => document.getElementById('h-view').textContent === s, secret);
+    await f.page.locator('#h-restore').click();
+    await f.page.waitForFunction(s => editor.text === s, secret);
+    await settled(f.page);
+    assert.deepEqual(await versions(), ['edit', 'sync', 'restore']);
+
+    // Deleting moves the note to the trash, where it can be restored.
+    await f.page.evaluate(() => { window.confirm = () => true; });
+    await f.page.locator('#del').click();
+    await f.page.waitForFunction(() => cur !== 'Secret draft.md'); await settled(f.page);
+    assert.equal(await f.page.locator('#trash').textContent(), '🗑 Trash (1)');
+    await f.page.locator('#trash').click();
+    assert.match(await f.page.locator('#h-list').textContent(), /Secret draft.*Deleted/s);
+    await f.page.waitForFunction(s => document.getElementById('h-view').textContent === s, secret);
+    await f.page.locator('#h-restore').click();
+    await f.page.waitForFunction(() => cur === 'Secret draft.md'); await settled(f.page);
+    assert.equal(await editorText(f.page), secret);
+    assert.equal(await f.page.locator('#trash').textContent(), '🗑 Trash');
+    assert.equal((await versions()).length, 3, 'the restored note keeps its history');
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(f.remote.get('Secret draft.md').content, secret);
+
+    // A note deleted on another device lands in this device's trash.
+    f.remote.delete('Secret draft.md');
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.has('Secret draft.md')), false);
+    await f.page.locator('#trash').click();
+    assert.match(await f.page.locator('#h-list').textContent(), /Deleted on another device/);
+    await f.page.locator('#h-close').click();
+
+    // Versions are ciphertext on the device, survive locking and are re-encrypted with a new password.
+    const stored = await f.page.evaluate(() => new Promise(resolve => {
+      const q = Auth.store.db.transaction('versions').objectStore('versions').getAll();
+      q.onsuccess = () => resolve(q.result.map(r => new TextDecoder().decode(r.data)));
+    }));
+    assert.ok(stored.length >= 4);
+    for (const text of stored) assert.equal(text.includes('Second draft') || text.includes(secret), false);
+    assert.equal(JSON.stringify(await raw(f.page)).includes(secret), false);
+    const texts = () => f.page.evaluate(() => Promise.all(Auth.store.history.sort((a, b) => a.time - b.time).map(v => Auth.store.getVersion(v.id))));
+    const before = await texts();
+    assert.deepEqual(before.slice(0, 3), [secret, 'Second draft', 'From phone']);
+    await f.page.locator('#lock').click(); await locked(f.page);
+    f.state.password = 'new longer password for test';
+    await unlock(f.page); await settled(f.page);
+    assert.deepEqual(await texts(), before);
+    await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
+    await f.page.locator('#lock').click(); await locked(f.page);
+    await unlock(f.page, f.state.password); await settled(f.page);
+    assert.deepEqual(await texts(), before);
+
+    // Delete forever empties the trash.
+    await f.page.locator('#trash').click();
+    await f.page.locator('#h-forget').click();
+    await f.page.locator('#h-list .none', { hasText: 'The trash is empty.' }).waitFor();
+    assert.equal(await f.page.evaluate(() => Auth.store.history.some(v => v.trashed)), false);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

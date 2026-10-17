@@ -132,6 +132,17 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #qs-list div{padding:7px 9px;border-radius:6px;cursor:pointer}
 #qs-list div.sel{background:var(--accent);color:#fff}
 #back{display:none}
+#trash{margin:4px 6px;background:none;border-color:transparent;text-align:left;color:var(--mute)}
+#trash:hover{border-color:var(--border);color:var(--fg)}
+#dlg-hist{width:min(820px,94vw)}
+#h-body{display:grid;grid-template-columns:minmax(180px,1fr) 2fr;gap:10px;margin-top:10px}
+#h-list{max-height:55vh;overflow:auto}
+#h-list div[data-i]{padding:6px 9px;border-radius:6px;cursor:pointer}
+#h-list div[data-i].sel{background:var(--accent);color:#fff}
+#h-list .m{font-size:12px;opacity:.75}
+#h-list .none{color:var(--mute);font-size:13px;padding:6px 0}
+#h-view{margin:0;max-height:55vh;overflow:auto;white-space:pre-wrap;word-break:break-word;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media(max-width:600px){#h-body{grid-template-columns:1fr}#h-list,#h-view{max-height:30vh}}
 #space{margin:10px 10px 0;background:none;border-color:transparent;text-align:left;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #space:hover{border-color:var(--border)}
 #sp-list{margin:10px 0;max-height:50vh;overflow:auto}
@@ -198,6 +209,7 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="new" title="New note (Alt+N)">＋</button>
   </div>
   <div id="list"></div>
+  <button id="trash" title="Deleted notes">🗑 Trash</button>
   <div id="status">Local only</div>
 </aside>
 <div id="back"></div>
@@ -210,7 +222,8 @@ button:disabled{opacity:.6;cursor:wait}
     <input id="img-in" type="file" accept="image/*" multiple hidden>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)">⌕</button>
     <button id="sync" title="Sync (Ctrl/Cmd+S)">⇅</button>
-    <button id="del" title="Delete note">🗑</button>
+    <button id="hist" title="Note history">🕘</button>
+    <button id="del" title="Move note to trash">🗑</button>
     <button id="cfg" title="Settings">⚙</button>
     <button id="lock" title="Lock Vault">Lock</button>
   </div>
@@ -247,6 +260,14 @@ button:disabled{opacity:.6;cursor:wait}
   <form id="sp-new"><input id="sp-name" placeholder="New space name" autocomplete="off" aria-label="New space name"><button class="on">Create</button></form>
   <p id="sp-err" class="hint" role="alert"></p>
   <div class="row"><button id="sp-close">Close</button></div>
+</dialog>
+
+<dialog id="dlg-hist">
+  <h3 id="h-title" style="margin:0">History</h3>
+  <p id="h-hint" class="hint"></p>
+  <div id="h-body"><div id="h-list"></div><pre id="h-view"></pre></div>
+  <p id="h-err" class="hint" role="alert"></p>
+  <div class="row"><button id="h-empty">Empty trash</button><button id="h-forget">Delete forever</button><button id="h-close">Close</button><button id="h-restore" class="on">Restore</button></div>
 </dialog>
 
 <dialog id="dlg-qs">

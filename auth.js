@@ -182,7 +182,7 @@ const Auth = {
         if (snapshot) {
           this.store.records = new Map(snapshot.notes.map(note => [note.path, note]));
           this.store.files = new Map(snapshot.files.map(file => [file.path, file]));
-          this.store.last = snapshot.last;
+          this.store.last = snapshot.last; this.store.history = snapshot.history;
         }
         if (this.store.key) { await this.store.persist(); await this.store.drain(); }
         this.store.forget(); this.releaseLease(); this.lockFailed = false;
