@@ -28,9 +28,11 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
+- Daily notes: 📅 (Alt+D) opens today's note, `Daily/2026-10-17.md` in the current space, creating it from `Templates/Daily.md` if that note exists
+- Templates: every note in `Templates/` is a template for **New note from template…** and **Insert template…** in the command palette. `{{title}}`, `{{date}}`, `{{time}}` and `{{date:dddd D MMMM YYYY}}` fill in (YYYY, YY, MMMM, MMM, MM, M, DD, D, dddd, ddd, HH, H, mm, ss)
 - Command palette (Ctrl/Cmd+P or ⋯): every action in one searchable list, recently used first
 
-Shortcuts: Ctrl/Cmd+P commands · Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E live preview/source · Ctrl/Cmd+Shift+F search · Alt+N new note
+Shortcuts: Ctrl/Cmd+P commands · Alt+D today's note · Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E live preview/source · Ctrl/Cmd+Shift+F search · Alt+N new note
 
 ## Spaces
 
