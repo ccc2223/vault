@@ -485,9 +485,14 @@ test('live preview hides Markdown away from the cursor; links, tasks, autocomple
     assert.equal(await shownText(), 'LiveSome bold and the draft.task');
     assert.equal(await f.page.locator('#ed .cm-md-strong').textContent(), 'bold');
 
-    // The element under the cursor shows its Markdown; the rest of the note stays rendered.
+    // By default the element under the cursor stays rendered; the revealSyntax flag brings its Markdown back.
     await f.page.evaluate(() => { editor.view.focus(); editor.view.dispatch({ selection: { anchor: editor.text.indexOf('bold') + 1 } }); });
+    assert.equal(await shownText(), 'LiveSome bold and the draft.task');
+    await f.page.evaluate(() => editor.setRevealSyntax(true));
     assert.equal(await shownText(), 'LiveSome **bold** and the draft.task');
+    await f.page.evaluate(() => editor.setRevealSyntax(false));
+    assert.equal(await shownText(), 'LiveSome bold and the draft.task');
+    await f.page.evaluate(() => editor.setRevealSyntax(true));
 
     // Ctrl/Cmd+E shows the whole source, and the choice is remembered.
     await f.page.keyboard.press('ControlOrMeta+e');
@@ -763,6 +768,7 @@ test('clicking an image picks it; handles resize it freely into widthxheight; De
     // Undo brings it back, and a double click shows its Markdown to edit.
     await f.page.keyboard.press('ControlOrMeta+z');
     assert.equal(await editorText(f.page), 'Top\n![[beach.png|120x80]]\nSee  here\nEnd');
+    await f.page.evaluate(() => editor.setRevealSyntax(true));
     await imgs.first().dblclick();
     assert.match(await f.page.locator('#ed .cm-content').textContent(), /!\[\[beach\.png\|120x80\]\]/);
     assert.equal(await f.page.locator('#ed .cm-picked').count(), 0);
