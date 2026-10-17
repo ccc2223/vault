@@ -18,7 +18,7 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 
 - One Obsidian-style editor with live preview: notes look rendered, and Markdown symbols only show where you're editing. Click links to open them and task boxes to tick them. Ctrl/Cmd+E switches to the plain Markdown source and back
 - Tasks: tick `- [ ]` boxes in a note, or open **Tasks** in the sidebar to see the open tasks from every note in the space, tick them there, or click one to jump to it
-- Tables edit cell by cell like Obsidian: click a cell to edit it, Tab and Enter move between cells and add rows, the + buttons add rows and columns, and right-click a cell to insert, delete or align rows and columns
+- Tables edit cell by cell like Obsidian: click a cell to edit it, Tab and Enter move between cells and add rows, the + buttons add rows and columns, right-click a cell to insert, delete or align rows and columns, and Escape, arrow down from the last row, or a click or tap below the table leaves it
 - Code blocks show their language and a Copy button, are highlighted for common languages (```js, ```python, ```bash, ```sql and more), and stay editable in place
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
 - Heading links: `[[Note#Heading]]` opens the note at that heading, `[[#Heading]]` jumps within the note, and typing `#` after a note name in `[[` suggests its headings
