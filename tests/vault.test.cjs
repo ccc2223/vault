@@ -1077,3 +1077,37 @@ test('[[Note#Heading]] opens a note at its heading, headings autocomplete, and t
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('the Tasks view collects open tasks across notes, ticks them in place and jumps to them', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      await createNote('Shop', '# Shop\n- [ ] milk\n- [x] bread\n  1. [ ] nested eggs\n```\n- [ ] not a task\n```\n');
+      await createNote('Work', '# Work\n- [ ] send report\n');
+    });
+    await settled(f.page);
+    assert.equal(await f.page.locator('#tasks').textContent(), '☑ Tasks (3)');
+    await f.page.locator('#tasks').click();
+    const rows = () => f.page.locator('#tk-list').evaluate(l => [...l.children].map(c => c.className === 'g' ? '> ' + c.textContent : (c.querySelector('input').checked ? '[x] ' : '[ ] ') + c.textContent));
+    assert.deepEqual(await rows(), ['> Work', '[ ] send report', '> Shop', '[ ] milk', '[ ] nested eggs']);
+    await f.page.locator('#tk-done').check();
+    assert.deepEqual(await rows(), ['> Work', '[ ] send report', '> Shop', '[ ] milk', '[x] bread', '[ ] nested eggs']);
+    await f.page.locator('#tk-done').uncheck();
+
+    // Ticking works in the open note (as an editor change) and in other notes.
+    await f.page.locator('#tk-list label', { hasText: 'send report' }).locator('input').click();
+    await f.page.locator('#tk-list label', { hasText: 'nested eggs' }).locator('input').click();
+    assert.deepEqual(await rows(), ['> Shop', '[ ] milk']);
+    await settled(f.page);
+    assert.equal(await editorText(f.page), '# Work\n- [x] send report\n');
+    assert.match(await f.page.evaluate(() => notes.get('Shop.md').content), /  1\. \[x\] nested eggs/);
+    assert.equal(await f.page.locator('#tasks').textContent(), '☑ Tasks (1)');
+
+    // Clicking a task's text opens its note at that line.
+    await f.page.locator('#tk-list label', { hasText: 'milk' }).locator('span').click();
+    await f.page.waitForFunction(() => cur === 'Shop.md' && editor.view.state.doc.lineAt(editor.pos).text === '- [ ] milk');
+    assert.equal(await f.page.locator('#dlg-tasks[open]').count(), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
