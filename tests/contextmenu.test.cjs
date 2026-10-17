@@ -66,7 +66,7 @@ test('right click opens a placeholder menu that names the context and closes aga
     assert.equal(await page.locator('#ctx').count(), 0);
 
     await page.locator('#ed .cm-content').click({ button: 'right', position: { x: 40, y: 10 } });
-    assert.equal((await menuText(page))[0], 'Editor');
+    assert.deepEqual(await menuText(page), ['Insert table…']);
     await page.locator('#list .item[data-p="Beta.md"]').click({ button: 'right' });
     assert.equal((await menuText(page))[0], 'Note: Beta', 'a new menu replaces the open one');
     await page.keyboard.press('Escape');
@@ -115,7 +115,7 @@ test('a touch long press over 700 ms opens the menu; shorter presses and drags d
     await press(x, y, 900, 40);
     assert.equal(await page.locator('#ctx').count(), 0, 'moving cancels the press');
     await press(x, y, 900);
-    assert.deepEqual(await menuText(page), ['Editor', 'More options coming soon']);
+    assert.deepEqual(await menuText(page), ['Insert table…']);
     await page.touchscreen.tap(5, 700);
     assert.equal(await page.locator('#ctx').count(), 0);
 
@@ -137,6 +137,43 @@ test('a touch long press over 700 ms opens the menu; shorter presses and drags d
     await press(item.x + 20, item.y + 10, 900);
     assert.equal((await menuText(page))[0], 'Note: Alpha');
     assert.equal(await page.evaluate(() => cur), 'Beta.md');
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('insert table: hovering the grid picks the size and a click inserts an empty table at the right-click', async () => {
+  const { context, page, errors } = await unlocked();
+  try {
+    const line = page.locator('#ed .cm-line').first();
+    const b = await line.boundingBox();
+    await page.mouse.click(b.x + 5, b.y + b.height / 2, { button: 'right' });
+    await page.locator('#ctx button', { hasText: 'Insert table' }).click();
+    assert.equal(await page.locator('#ctx').count(), 0);
+    const cell = (r, c) => page.locator(`#tpick .grid span[data-r="${r}"][data-c="${c}"]`);
+    await cell(3, 4).hover();
+    assert.equal(await page.locator('#tpick .size').textContent(), '3 rows × 4 columns');
+    assert.equal(await page.locator('#tpick .grid span.on').count(), 12);
+    await cell(2, 3).hover();
+    assert.equal(await page.locator('#tpick .size').textContent(), '2 rows × 3 columns');
+    await cell(2, 3).click();
+    assert.equal(await page.locator('#tpick').count(), 0);
+    const empty = '|     |     |     |\n';
+    assert.equal(await page.evaluate(() => editor.text), 'Beta links [[Alpha]]\n\n' + empty + '| --- | --- | --- |\n' + empty);
+    assert.equal(await page.locator('#ed .cm-table th').count(), 3);
+    assert.equal(await page.locator('#ed .cm-table td').count(), 3);
+    assert.equal(await page.evaluate(() => document.activeElement.matches('#ed .cm-table th[data-r="0"][data-c="0"]')), true, 'the first header cell has focus');
+    await page.keyboard.type('Name');
+    assert.match(await page.evaluate(() => editor.text), /^Beta links \[\[Alpha\]\]\n\n\| Name \|/);
+
+    // Keyboard: arrows resize, Enter inserts; Escape closes without inserting.
+    await page.evaluate(() => TablePicker.open(50, 50, (r, c) => { window.picked = [r, c]; }));
+    for (const key of ['ArrowRight', 'ArrowDown', 'ArrowDown']) await page.keyboard.press(key);
+    await page.keyboard.press('Enter');
+    assert.deepEqual(await page.evaluate(() => window.picked), [4, 3]);
+    await page.evaluate(() => TablePicker.open(50, 50, () => { window.picked = 'no'; }));
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#tpick').count(), 0);
+    assert.deepEqual(await page.evaluate(() => window.picked), [4, 3]);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });

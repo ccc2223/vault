@@ -43,7 +43,7 @@ const ContextMenu = (() => {
   }
   function open(x, y, target) {
     close();
-    const ctx = describe(target);
+    const ctx = { ...describe(target), x, y };
     const items = (providers.get(ctx.type) || placeholder)(ctx) || [];
     if (!items.length) return;
     menu = document.createElement('div');
@@ -67,7 +67,7 @@ const ContextMenu = (() => {
     document.addEventListener('scroll', close, true);
     menu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true });
   }
-  const native = (e, target) => e.shiftKey || !!target.closest('input, textarea, select, dialog, #ctx');
+  const native = (e, target) => e.shiftKey || !!target.closest('input, textarea, select, dialog, #ctx, #tpick');
 
   document.addEventListener('contextmenu', e => {
     if (synthetic || native(e, e.target)) return;

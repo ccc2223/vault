@@ -286,7 +286,7 @@ const LiveEditor = (() => {
         const cell = cellAt(w, Math.max(0, Math.min(r, rows.length - 1)), Math.max(0, Math.min(c, rows[0].length - 1)));
         cell.focus();
         if (at != null) caret(cell, at === 'end' ? cell.textContent.length : at);
-        return;
+        return true;
       }
     }
     const insertRow = (m, at) => m.rows.splice(Math.max(1, at), 0, m.aligns.map(() => ''));
@@ -704,6 +704,20 @@ const LiveEditor = (() => {
       },
       insert(text, from = view.state.selection.main.from, to = view.state.selection.main.to) {
         view.dispatch({ changes: { from, to, insert: text }, selection: EditorSelection.cursor(from + text.length), scrollIntoView: true, userEvent: 'input' });
+      },
+      // An empty rows × cols table (the first row is the header) on its own lines at pos, with the first cell focused.
+      insertTable(rows, cols, pos = this.pos) {
+        const doc = view.state.doc, line = doc.lineAt(pos), filled = n => n >= 1 && n <= doc.lines && !!doc.line(n).text.trim();
+        const src = tableSource({ rows: Array.from({ length: rows }, () => Array(cols).fill('')), aligns: Array(cols).fill('') });
+        // Blank lines around it, so the table neither joins the paragraph above nor swallows the line below,
+        // and always a line after it to keep typing on.
+        const [at, before, after] = line.text.trim() ? [line.to, '\n\n', '\n'] :
+          [line.from, filled(line.number - 1) ? '\n' : '', filled(line.number + 1) || line.number === doc.lines ? '\n' : ''];
+        const from = at + before.length;
+        view.dispatch({ changes: { from: at, insert: before + src + after }, selection: EditorSelection.cursor(from + src.length + 1), scrollIntoView: true, userEvent: 'input' });
+        view.focus();
+        // Source mode shows no grid; the caret then goes in the first cell's text.
+        if (!focusCell(view, from, 0, 0)) view.dispatch({ selection: EditorSelection.cursor(from + 2) });
       },
       lineBefore() { const p = this.pos, l = view.state.doc.lineAt(p); return view.state.doc.sliceString(l.from, p); },
       coords(pos) { return view.coordsAtPos(pos); },
