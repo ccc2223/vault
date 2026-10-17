@@ -146,11 +146,11 @@ marked.use({
     name: 'embed', level: 'inline',
     start(src) { return src.indexOf('![['); },
     tokenizer(src) {
-      const m = /^!\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
-      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), text: (m[2] || '').trim() };
+      const m = /^!\[\[([^\]|#]+)(#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
+      if (m) return { type: 'embed', raw: m[0], target: m[1].trim(), heading: m[2]?.slice(1).trim(), text: (m[3] || '').trim() };
     },
     renderer(t) {
-      if (!IMAGE.test(t.target)) return wikilinkHTML(t.target, t.text || t.target);
+      if (!IMAGE.test(t.target)) return wikilinkHTML(t.target, t.text || t.target, t.heading);
       const p = resolveFile(t.target), { alt, size } = splitSize(t.text);
       return p ? imgTag(p, alt || fileName(t.target), size) : missingImg(t.target);
     }
@@ -158,17 +158,17 @@ marked.use({
     name: 'wikilink', level: 'inline',
     start(src) { return src.indexOf('[['); },
     tokenizer(src) {
-      const m = /^\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
-      if (m) return { type: 'wikilink', raw: m[0], target: m[1].trim(), text: (m[2] || m[1]).trim() };
+      const m = /^\[\[([^\]|#]*)(#[^\]|]*)?(?:\|([^\]]+))?\]\]/.exec(src);
+      if (m && (m[1].trim() || m[2]?.slice(1).trim())) return { type: 'wikilink', raw: m[0], target: m[1].trim(), heading: m[2]?.slice(1).trim(), text: (m[3] || m[1] + (m[2] || '')).trim() };
     },
-    renderer(t) { return wikilinkHTML(t.target, t.text); }
+    renderer(t) { return wikilinkHTML(t.target, t.text, t.heading); }
   }]
 });
-function wikilinkHTML(target, text) {
+function wikilinkHTML(target, text, heading) {
   const att = IMAGE.test(target) && resolveFile(target);
   if (att) return `<a class="wikilink" data-att="${esc(att)}">${esc(text)}</a>`;
-  const ok = resolve(target);
-  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}">${esc(text)}</a>`;
+  const ok = !target || resolve(target);
+  return `<a class="wikilink${ok ? '' : ' missing'}" data-target="${esc(target)}"${heading ? ` data-heading="${esc(heading)}"` : ''}>${esc(text)}</a>`;
 }
 DOMPurify.addHook('afterSanitizeAttributes', node => {
   if (node.tagName === 'A' && node.getAttribute('href')) {
@@ -364,6 +364,7 @@ async function openNote(path) {
   const last = Auth.store.last && typeof Auth.store.last === 'object' ? Auth.store.last : { notes: {} };
   Auth.store.last = { space, notes: { ...last.notes, [space]: path } };
   editor.load(notes.get(path).content);
+  scheduleOutline();
   $('#title').textContent = baseName(path);
   document.title = baseName(path) + ' – Vault';
   renderBacklinks(); renderList();
@@ -439,11 +440,17 @@ async function deleteNote() {
 
 /* ---------- editor ---------- */
 // Live preview: Markdown is hidden except in the element being edited (see editor.js).
-async function followLink(target) { const p = resolve(target); if (p) await openNote(p); else await createNote(target); }
+// [[Note]], [[Note#Heading]] or [[#Heading]] in the open note.
+async function followLink(target, heading) {
+  const p = target ? resolve(target) : cur;
+  if (!p) { await createNote(target); return; }
+  if (p !== cur) await openNote(p);
+  if (heading && !gotoHeading(heading)) setStatus(`No heading "${heading}" in ${baseName(p)}`, true);
+}
 async function openAttachment(path) { const f = files.get(path); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); }
 const editor = LiveEditor.create($('#ed'), {
   change(text) { const n = notes.get(cur); if (!n) return; beforeEdit(n); n.content = text; touch(n); },
-  cursor(typed) { if (typed) updateSug(); else hideSug(); },
+  cursor(typed) { if (typed) updateSug(); else hideSug(); scheduleOutline(); },
   keydown: e => sugKey(e),
   paste(e) {
     const list = imagesIn(e.clipboardData?.files);
@@ -454,7 +461,7 @@ const editor = LiveEditor.create($('#ed'), {
     const list = imagesIn(e.dataTransfer.files);
     if (list.length) tryAdd(list, false); else setStatus('Only images can be added to notes.', true);
   },
-  follow: target => followLink(target).catch(error => { if (Auth.active) setStatus(error.message, true); }),
+  follow: (target, heading) => followLink(target, heading).catch(error => { if (Auth.active) setStatus(error.message, true); }),
   openAttachment: path => openAttachment(path).catch(() => {}),
   imageURL(path) { const f = files.get(path); return f ? attachmentURL(f) : Promise.reject(new Error('Image not found')); },
   resolveImage: target => resolveFile(target),
@@ -543,8 +550,11 @@ function updateSug() {
   sugTag = !!t;
   sugStart = t ? pos - t[1].length - 1 : pos - m[1].length - 2;
   const q = (t || m)[1].toLowerCase();
-  // After # suggest tags, after ![[ images, otherwise notes.
-  sugItems = t ? [...index.tags.values()].filter(x => x.name.toLowerCase().startsWith(q) && x.name.toLowerCase() !== q)
+  // After [[Note# suggest that note's headings ([[# the open note's), after # tags, after ![[ images, otherwise notes.
+  const hm = m && /^([^#]*)#([^#]*)$/.exec(m[1]), of = hm && (hm[1].trim() ? resolve(hm[1]) : cur);
+  sugItems = hm ? (of ? headingsOf(of === cur ? editor.text : notes.get(of).content).filter(h => h.text.toLowerCase().includes(hm[2].toLowerCase()))
+      .slice(0, 8).map(h => hm[1] + '#' + h.text) : [])
+    : t ? [...index.tags.values()].filter(x => x.name.toLowerCase().startsWith(q) && x.name.toLowerCase() !== q)
       .sort((a, b) => b.paths.size - a.paths.size).slice(0, 8).map(x => '#' + x.name)
     : before[before.length - m[0].length - 1] === '!'
     ? liveFiles().filter(f => fileName(f.path).toLowerCase().includes(q)).sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(f => fileName(f.path))
@@ -564,7 +574,9 @@ function drawSug() {
 }
 function pickSug(i) {
   const name = sugItems[i]; if (name == null) return;
-  editor.insert(sugTag ? name + ' ' : '[[' + name + ']]', sugStart, editor.pos);
+  // Replace what was typed, and a ]] the editor already closed.
+  const close = editor.text.slice(editor.pos, editor.pos + 2) === ']]' ? 2 : 0;
+  editor.insert(sugTag ? name + ' ' : '[[' + name + ']]', sugStart, editor.pos + (sugTag ? 0 : close));
   hideSug();
 }
 $('#sug').addEventListener('mousedown', e => { e.preventDefault(); const d = e.target.closest('div[data-i]'); if (d) pickSug(+d.dataset.i); });
@@ -579,6 +591,50 @@ function sugKey(e) {
   e.preventDefault(); drawSug(); return true;
 }
 editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
+
+/* ---------- outline ---------- */
+// Headings of a note: ATX headings outside code blocks, as {level, text, pos}.
+function headingsOf(content) {
+  const out = []; let fence = null, pos = 0;
+  for (const line of content.split('\n')) {
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (f && (!fence || f[1][0] === fence[0] && f[1].length >= fence.length)) fence = fence ? null : f[1];
+    else if (!fence) {
+      const m = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+      if (m && m[2]) out.push({ level: m[1].length, text: m[2], pos });
+    }
+    pos += line.length + 1;
+  }
+  return out;
+}
+const sameHeading = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+function gotoHeading(heading) {
+  const h = headingsOf(editor.text).find(x => sameHeading(x.text, heading));
+  if (h) editor.goto(h.pos);
+  return !!h;
+}
+let outlineT = 0;
+const scheduleOutline = () => { if (!outlineT && document.body.classList.contains('outline')) outlineT = requestAnimationFrame(renderOutline); };
+function renderOutline() {
+  outlineT = 0;
+  const hs = headingsOf(editor.text), top = Math.min(...hs.map(h => h.level)), at = editor.pos;
+  const here = hs.reduce((a, h, i) => h.pos <= at ? i : a, -1);
+  $('#ol-list').innerHTML = hs.map((h, i) => `<div class="${i === here ? 'cur' : ''}" data-i="${i}" style="padding-left:${(h.level - top) * 12 + 8}px">${esc(h.text)}</div>`).join('') ||
+    '<div class="none">No headings in this note.</div>';
+}
+function toggleOutline(on = !document.body.classList.contains('outline')) {
+  document.body.classList.toggle('outline', on);
+  try { localStorage.setItem('vault.outline', on && innerWidth > 800 ? 'open' : ''); } catch {}
+  if (on) renderOutline();
+}
+$('#ol-btn').onclick = () => toggleOutline();
+$('#ol-close').onclick = () => toggleOutline(false);
+$('#ol-list').addEventListener('click', e => {
+  const d = e.target.closest('div[data-i]'); if (!d) return;
+  const h = headingsOf(editor.text)[+d.dataset.i];
+  if (h) editor.goto(h.pos);
+  if (innerWidth <= 800) toggleOutline(false);
+});
 
 /* ---------- trash and history dialog ---------- */
 let histTrash = false, histItems = [], histSel = 0;
@@ -1155,6 +1211,7 @@ $('#cmd').onclick = () => openCommands();
   command('Move note to trash', deleteNote, '', hasNote);
   command('Show note history', () => openHistory(false), '', hasNote);
   command('Open trash', () => openHistory(true));
+  command('Toggle outline', () => toggleOutline(), '', hasNote);
   command('Show tags', () => { document.body.classList.add('drawer'); $('#tags').open = true; $('#tag-list button')?.focus(); });
   command('Insert table…', () => $('#tbl').click(), '', hasNote);
   command('Insert image…', () => $('#img').click(), '', hasNote);
@@ -1205,7 +1262,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - Link notes with [[wikilinks]] — try [[Example Note]] (click it to create it)
 - Type \`[[\` to autocomplete note names
 - Markdown symbols only show where you're editing; **Ctrl/Cmd+E** shows the whole source
-- Backlinks appear under the editor
+- Backlinks appear under the editor; link to a heading with [[Note#Heading]], and ≡ shows the note's outline
 - **Alt+D** or 📅 opens today's note in \`Daily/\`; notes in \`Templates/\` become templates
 - **Ctrl/Cmd+P** every command · **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
@@ -1226,7 +1283,7 @@ const App = {
     editor.load(''); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
-    $('#tag-list').replaceChildren(); $('#tags-sum').textContent = 'Tags';
+    $('#tag-list').replaceChildren(); $('#ol-list').replaceChildren(); $('#tags-sum').textContent = 'Tags';
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
@@ -1245,6 +1302,7 @@ const App = {
     if (![...notes.values()].some(isNote)) await createNote('Welcome', WELCOME);
     // Older versions stored edit, split or view; all of them now open in live preview.
     setSource(localStorage.getItem('vault.mode') === 'source');
+    if (localStorage.getItem('vault.outline') === 'open' && innerWidth > 800) toggleOutline(true);
     await switchSpace(legacy ? spaceOf(legacy) : last?.space || '', legacy || undefined);
     if (getCfg()) sync();
     else setStatus('Saved notes unlocked — offline or sign in in Settings to sync');

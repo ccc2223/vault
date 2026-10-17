@@ -1037,3 +1037,43 @@ test("today's note opens or is created from the Daily template; templates fill i
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('[[Note#Heading]] opens a note at its heading, headings autocomplete, and the outline jumps around', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    const filler = Array.from({ length: 80 }, (_, i) => 'line ' + i).join('\n');
+    await f.page.evaluate(async filler => {
+      await createNote('Long', `# Long\n\n## Intro\n${filler}\n\n\`\`\`\n# not a heading\n\`\`\`\n### Deep Part ##\n${filler}\n## End\n`);
+      await createNote('Links', 'See [[Long#Deep part]] and [[Long#End|the end]], and [[#Top]].\n\n# Top\n');
+    }, filler);
+    // Links show the heading too, and open the note with that heading at the top.
+    assert.deepEqual(await f.page.locator('#ed .wikilink').allTextContents(), ['Long#Deep part', 'the end', '#Top']);
+    await f.page.locator('#ed .wikilink', { hasText: 'Long#Deep part' }).click();
+    await f.page.waitForFunction(() => cur === 'Long.md');
+    await f.page.waitForFunction(() => editor.view.state.doc.lineAt(editor.pos).text === '### Deep Part ##');
+    const top = await f.page.evaluate(() => editor.view.coordsAtPos(editor.pos).top - editor.view.scrollDOM.getBoundingClientRect().top);
+    assert.ok(top >= 0 && top < 80, 'heading scrolled to the top, was ' + top);
+
+    // The outline lists headings outside code, indented by level, and jumps to them.
+    await f.page.locator('#ol-btn').click();
+    const outline = () => f.page.locator('#ol-list div[data-i]').evaluateAll(rows => rows.map(r => r.textContent + ':' + r.style.paddingLeft + (r.classList.contains('cur') ? '*' : '')));
+    assert.deepEqual(await outline(), ['Long:8px', 'Intro:20px', 'Deep Part:32px*', 'End:20px']);
+    await f.page.locator('#ol-list div[data-i]', { hasText: 'End' }).click();
+    await f.page.waitForFunction(() => editor.view.state.doc.lineAt(editor.pos).text === '## End');
+    await f.page.waitForFunction(() => document.querySelector('#ol-list .cur')?.textContent === 'End');
+    assert.equal(await f.page.evaluate(() => localStorage.getItem('vault.outline')), 'open');
+
+    // [[#Heading]] jumps within the open note; typing [[Note# suggests that note's headings.
+    await f.page.evaluate(() => openNote('Links.md'));
+    await f.page.locator('#ed .wikilink', { hasText: '#Top' }).click();
+    await f.page.waitForFunction(() => editor.view.state.doc.lineAt(editor.pos).text === '# Top');
+    await f.page.evaluate(() => editor.focus(true));
+    await f.page.keyboard.type('[[Long#in');
+    await f.page.locator('#sug div.sel').waitFor();
+    assert.deepEqual(await f.page.locator('#sug div').allTextContents(), ['Long#Intro']);
+    await f.page.keyboard.press('Enter');
+    assert.match(await editorText(f.page), /# Top\n\[\[Long#Intro\]\]$/);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

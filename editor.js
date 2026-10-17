@@ -11,8 +11,8 @@ const LiveEditor = (() => {
     historyKeymap, defaultKeymap, indentMore, indentLess, undo, redo, GFM, parseCode, tags, codeModes
   } = CM;
 
-  // [[Note]], [[Note#Heading|alias]] and ![[image.png|300]], matching the app's marked extensions.
-  const WIKI = /^(!?)\[\[([^\]|#\n]+)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/;
+  // [[Note]], [[Note#Heading|alias]], [[#Heading]] and ![[image.png|300]], matching the app's marked extensions.
+  const WIKI = /^(!?)\[\[([^\]|#\n]*)(#[^\]|\n]*)?(?:\|([^\]\n]+))?\]\]/;
   const WikiLinks = {
     defineNodes: ['WikiLink', 'Embed'],
     parseInline: [{
@@ -20,7 +20,7 @@ const LiveEditor = (() => {
       parse(cx, next, pos) {
         if (next !== 91 && next !== 33) return -1;
         const m = WIKI.exec(cx.slice(pos, Math.min(cx.end, pos + 1000)));
-        return m ? cx.addElement(cx.elt(m[1] ? 'Embed' : 'WikiLink', pos, pos + m[0].length)) : -1;
+        return m && (m[2].trim() || m[3]?.slice(1).trim()) ? cx.addElement(cx.elt(m[1] ? 'Embed' : 'WikiLink', pos, pos + m[0].length)) : -1;
       }
     }]
   };
@@ -320,7 +320,7 @@ const LiveEditor = (() => {
       const a = e.target.closest('.wikilink[data-target], .wikilink[data-att], a[href]');
       if (a && !e.shiftKey) {
         e.preventDefault();
-        if (a.dataset.target || a.dataset.att) follow(a);
+        if ('target' in a.dataset || a.dataset.att) follow(a);
         else if (/^(https?:|mailto:)/i.test(a.getAttribute('href'))) window.open(a.href, '_blank', 'noopener,noreferrer');
         return;
       }
@@ -455,17 +455,17 @@ const LiveEditor = (() => {
       const lines = (from, to, cls) => { for (let p = from; p <= to;) { const l = doc.lineAt(p); line(l.from, cls); p = l.to + 1; } };
       const text = (from, to) => doc.sliceString(from, to);
       const kids = (node, name) => { const r = []; for (let c = node.firstChild; c; c = c.nextSibling) if (c.name === name) r.push(c); return r; };
-      const link = (target, alias) => {
+      const link = (target, heading) => {
         const att = hooks.isImage(target) && hooks.resolveImage(target);
         return att ? { cls: 'wikilink', attrs: { 'data-att': att } }
-          : { cls: hooks.noteExists(target) ? 'wikilink' : 'wikilink missing', attrs: { 'data-target': target } };
+          : { cls: !target || hooks.noteExists(target) ? 'wikilink' : 'wikilink missing', attrs: { 'data-target': target, ...(heading ? { 'data-heading': heading } : {}) } };
       };
-      // [[target#heading|alias]] shows its alias, or else its target, as a link.
+      // [[target#heading|alias]] shows its alias, or else its target and heading, as a link.
       const wikilink = (node, open) => {
-        const m = WIKI.exec(text(node.from, node.to)), target = m[2].trim();
+        const m = WIKI.exec(text(node.from, node.to)), target = m[2].trim(), heading = m[3]?.slice(1).trim();
         if (touches(node.from, node.to)) { mark(node.from, node.from + open, 'cm-md-mark'); mark(node.to - 2, node.to, 'cm-md-mark'); return; }
-        const shown = m[4] ? [node.to - 2 - m[4].length, node.to - 2] : [node.from + open, node.from + open + m[2].length];
-        const { cls, attrs } = link(target);
+        const shown = m[4] ? [node.to - 2 - m[4].length, node.to - 2] : [node.from + open, node.from + open + m[2].length + (heading ? m[3].length : 0)];
+        const { cls, attrs } = link(target, heading);
         hide(node.from, shown[0]); mark(shown[0], shown[1], cls, attrs); hide(shown[1], node.to);
       };
       const sel = state.field(picked);
@@ -630,7 +630,7 @@ const LiveEditor = (() => {
     }
     function follow(a) {
       if (a.dataset.att) hooks.openAttachment(a.dataset.att);
-      else if (a.dataset.target) hooks.follow(a.dataset.target);
+      else if ('target' in a.dataset) hooks.follow(a.dataset.target, a.dataset.heading);
       else if (a.dataset.href && /^(https?:|mailto:)/i.test(a.dataset.href)) window.open(a.dataset.href, '_blank', 'noopener,noreferrer');
     }
     const events = EditorView.domEventHandlers({
@@ -734,6 +734,11 @@ const LiveEditor = (() => {
         view.focus();
         // Source mode shows no grid; the caret then goes in the first cell's text.
         if (!focusCell(view, from, 0, 0)) view.dispatch({ selection: EditorSelection.cursor(from + 2) });
+      },
+      // Put the cursor at pos and scroll its line to the top (a heading picked in the outline).
+      goto(pos) {
+        view.dispatch({ selection: { anchor: pos }, effects: EditorView.scrollIntoView(pos, { y: 'start', yMargin: 12 }) });
+        view.focus();
       },
       lineBefore() { const p = this.pos, l = view.state.doc.lineAt(p); return view.state.doc.sliceString(l.from, p); },
       coords(pos) { return view.coordsAtPos(pos); },
