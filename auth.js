@@ -109,6 +109,10 @@ const Auth = {
       document.getElementById('unlock-submit').disabled = false;
     } catch (error) { this.message('unlock-error', error.message); }
     if ('serviceWorker' in navigator) {
+      // A new version takes over while this page still runs the old code; reload while still locked.
+      if (navigator.serviceWorker.controller) {
+        navigator.serviceWorker.addEventListener('controllerchange', () => { if (!this.active) location.reload(); });
+      }
       navigator.serviceWorker.register('sw.js').then(registration => registration.update()).catch(() => {});
     }
   },

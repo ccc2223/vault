@@ -1,13 +1,15 @@
 // Cache only the public app shell. Notes and authentication responses never enter Cache Storage.
-const CACHE = 'vault-v3-secure-10';
+const CACHE = 'vault-v3-secure-11';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg',
   'secure-store.js', 'auth.js', 'editor.js', 'app.js', 'contextmenu.js', 'vendor/marked.min.js', 'vendor/purify.min.js',
   'vendor/codemirror.min.js'];
 const shellURLs = new Set(CORE.map(path => new URL(path, self.registration.scope).href));
 
 self.addEventListener('install', event => {
-  // A partial download must not replace a working offline installation.
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));
+  // A partial download must not replace a working offline installation. Bypass the HTTP cache
+  // (GitHub Pages sends max-age=600) so a new version never stores files from the previous one.
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE.map(path => new Request(path, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', event => {
   event.waitUntil(caches.keys().then(keys => Promise.all(keys
