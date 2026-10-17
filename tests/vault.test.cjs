@@ -925,3 +925,33 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('the command palette lists every action, filters as you type, runs one and puts it first next time', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.keyboard.press('ControlOrMeta+p');
+    await f.page.locator('#dlg-cmd[open]').waitFor();
+    const names = () => f.page.locator('#cmd-list div[data-i]').evaluateAll(rows => rows.map(r => r.firstChild.textContent));
+    assert.ok((await names()).includes('Open trash'));
+    await f.page.keyboard.type('chkbox');
+    assert.deepEqual(await names(), ['Insert checkbox']);
+    await f.page.keyboard.press('Enter');
+    assert.equal(await f.page.locator('#dlg-cmd[open]').count(), 0);
+    await f.page.waitForFunction(s => editor.text === '- [ ] ' + s, secret);
+    await f.page.keyboard.type(' buy milk');
+    assert.equal(await editorText(f.page), '- [ ] ' + secret + ' buy milk');
+
+    // The toolbar button opens it too, with the last command first; Escape closes it.
+    await f.page.locator('#cmd').click();
+    assert.equal((await names())[0], 'Insert checkbox');
+    await f.page.keyboard.type('sync settings');
+    await f.page.locator('#cmd-list div[data-i]', { hasText: 'Sync settings' }).click();
+    await f.page.locator('#dlg-cfg[open]').waitFor();
+    await f.page.locator('#c-cancel').click();
+    await f.page.keyboard.press('ControlOrMeta+p');
+    await f.page.keyboard.press('Escape');
+    assert.equal(await f.page.locator('#dlg-cmd[open]').count(), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

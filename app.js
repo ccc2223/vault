@@ -685,6 +685,45 @@ $('#qs-in').addEventListener('keydown', e => {
 $('#qs-list').addEventListener('click', e => { const d = e.target.closest('div[data-i]'); if (d) qsGo(+d.dataset.i); });
 $('#dlg-qs').addEventListener('click', e => { if (e.target === $('#dlg-qs')) $('#dlg-qs').close(); });
 
+/* ---------- command palette ---------- */
+// Ctrl/Cmd+P lists every action. Features add theirs with command(name, run, keys); when shows it only where it applies.
+const commands = [];
+const command = (name, run, keys = '', when = () => true) => commands.push({ name, run, keys, when });
+const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
+let cmdSel = 0, cmdRes = [];
+function recentCommands() { try { return JSON.parse(localStorage.getItem('vault.commands') || '[]'); } catch { return []; } }
+function drawCmd() {
+  const q = $('#cmd-in').value.trim().toLowerCase(), recent = recentCommands();
+  const rank = c => { const i = recent.indexOf(c.name); return i < 0 ? recent.length : i; };
+  const all = commands.filter(c => c.when());
+  cmdRes = q ? all.map(c => ({ c, s: fuzzy(c.name, q) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s || rank(a.c) - rank(b.c)).map(x => x.c)
+    : all.sort((a, b) => rank(a) - rank(b));
+  cmdSel = Math.max(0, Math.min(cmdSel, cmdRes.length - 1));
+  $('#cmd-list').innerHTML = cmdRes.map((c, i) => `<div class="${i === cmdSel ? 'sel' : ''}" data-i="${i}">${esc(c.name)}` +
+    (c.keys ? `<kbd>${esc(c.keys.replace('Mod', MOD))}</kbd>` : '') + '</div>').join('') || '<div class="none">No matching commands</div>';
+  $('#cmd-list .sel')?.scrollIntoView({ block: 'nearest' });
+}
+async function cmdGo(i) {
+  const c = cmdRes[i]; if (!c) return;
+  $('#dlg-cmd').close();
+  try { localStorage.setItem('vault.commands', JSON.stringify([c.name, ...recentCommands().filter(n => n !== c.name)].slice(0, 20))); } catch {}
+  try { await c.run(); } catch (error) { if (Auth.active) setStatus(error.message, true); }
+}
+function openCommands() {
+  Auth.ensure();
+  if ($('#dlg-cmd').open) return;
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+  $('#cmd-in').value = ''; cmdSel = 0; drawCmd(); $('#dlg-cmd').showModal(); $('#cmd-in').focus();
+}
+$('#cmd-in').addEventListener('input', () => { cmdSel = 0; drawCmd(); });
+$('#cmd-in').addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); cmdSel = Math.min(cmdSel + 1, cmdRes.length - 1); drawCmd(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); cmdSel = Math.max(cmdSel - 1, 0); drawCmd(); }
+  else if (e.key === 'Enter') { e.preventDefault(); cmdGo(cmdSel); }
+});
+$('#cmd-list').addEventListener('click', e => { const d = e.target.closest('div[data-i]'); if (d) cmdGo(+d.dataset.i); });
+$('#dlg-cmd').addEventListener('click', e => { if (e.target === $('#dlg-cmd')) $('#dlg-cmd').close(); });
+
 /* ---------- GitHub sync ---------- */
 const getCfg = () => Auth.session;
 const encPath = p => p.split('/').map(encodeURIComponent).join('/');
@@ -1016,6 +1055,31 @@ $('#new').onclick = async () => {
   };
 }
 $('#del').onclick = deleteNote;
+$('#cmd').onclick = openCommands;
+{
+  const hasNote = () => !!cur, today = () => new Date().toLocaleDateString('en-CA');
+  command('New note', () => $('#new').click(), 'Alt+N');
+  command('Open note…', openSwitcher, 'Mod+O');
+  command('Search notes', () => { document.body.classList.add('drawer'); $('#q').focus(); }, 'Mod+Shift+F');
+  command('Switch space…', openSpaces, 'Mod+Shift+O');
+  command('Rename note', () => $('#title').focus(), '', hasNote);
+  command('Move note to trash', deleteNote, '', hasNote);
+  command('Show note history', () => openHistory(false), '', hasNote);
+  command('Open trash', () => openHistory(true));
+  command('Insert table…', () => $('#tbl').click(), '', hasNote);
+  command('Insert image…', () => $('#img').click(), '', hasNote);
+  // Turns the current line (or list item) into a task, like Obsidian's "Toggle checklist".
+  command('Insert checkbox', () => {
+    const v = editor.view, line = v.state.doc.lineAt(editor.pos), m = /^(\s*)(?:[-*+] (?:\[[ xX]\] )?)?/.exec(line.text);
+    v.dispatch({ changes: { from: line.from, to: line.from + m[0].length, insert: m[1] + '- [ ] ' }, selection: { anchor: line.to + m[1].length + 6 - m[0].length }, userEvent: 'input' });
+    editor.focus();
+  }, '', hasNote);
+  command("Insert today's date", () => { editor.focus(); editor.insert(today()); }, '', hasNote);
+  command('Toggle live preview and source', () => setSource(!editor.source), 'Mod+E', hasNote);
+  command('Sync now', sync, 'Mod+S');
+  command('Sync settings', () => $('#cfg').click());
+  command('Lock Vault', () => Auth.lock());
+}
 $('#sync').onclick = sync;
 $('#switch').onclick = openSwitcher;
 $('#menu').onclick = () => document.body.classList.toggle('drawer');
@@ -1024,7 +1088,8 @@ document.addEventListener('keydown', e => {
   if (!Auth.active) return;
   Auth.ensure();
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openSpaces(); }
+  if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openCommands(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openSpaces(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); sync(); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); document.body.classList.add('drawer'); $('#q').focus(); }
@@ -1050,7 +1115,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - Type \`[[\` to autocomplete note names
 - Markdown symbols only show where you're editing; **Ctrl/Cmd+E** shows the whole source
 - Backlinks appear under the editor
-- **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
+- **Ctrl/Cmd+P** every command · **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
 - Set up sync with the ⚙ button
 
@@ -1068,7 +1133,7 @@ const App = {
     editor.load(''); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
-    $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren();
+    $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
     versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash').textContent = '🗑 Trash';
