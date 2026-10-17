@@ -26,8 +26,8 @@ before(async () => {
 });
 after(async () => { await browser?.close(); await new Promise(resolve => server?.close(resolve)); });
 
-async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
-  const context = await browser.newContext({ serviceWorkers });
+async function fixture({ legacy = true, serviceWorkers = 'block', ...options } = {}) {
+  const context = await browser.newContext({ serviceWorkers, ...options });
   const remote = new Map();
   const state = { password, offline: false, calls: [], delay: null, started: false };
   await context.route(url + '/**', async route => {
@@ -845,6 +845,56 @@ test('tables edit cell by cell with rows and columns added; code blocks highligh
     assert.match(await editorText(f.page), /const x = 1; \/\/ one two\n```\nEnd$/);
     await settled(f.page);
     assert.match(await f.page.evaluate(() => notes.get('Grid.md').content), /\| Name +\| Link +\| Extra \|/);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('Escape, arrow down, or a click or tap below a table leave it, and typing there starts a paragraph instead of a row', async () => {
+  const mid = 'Intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nEnd', last = 'Intro\n\n| a | b |\n| - | - |\n| 1 | 2 |';
+  const tail = /\| 1x +\| 2 +\|\n\nAfter(\nEnd)?$/;
+  async function check(f, name, note, exit, tap = false) {
+    await f.page.evaluate(([n, t]) => createNote(n, t), [name, note]);
+    if (note) await f.page.locator('#ed .cm-table td').first()[tap ? 'tap' : 'click']();
+    else await f.page.evaluate(() => { editor.focus(true); editor.insertTable(2, 2); });
+    await f.page.keyboard.type('x');
+    await exit();
+    assert.equal(await f.page.evaluate(() => editor.view.hasFocus), true, name + ': the caret is back in the note');
+    await f.page.keyboard.type('After');
+    const text = await editorText(f.page);
+    if (note) assert.match(text, tail, name);
+    else assert.match(text, /\| x +\| +\|\n\| -+ \| -+ \|\n\| +\| +\|\n\nAfter$/, name);
+    assert.equal(await f.page.locator('#ed .cm-table td').count(), 2, name + ': no row was added');
+  }
+  const below = page => async () => {
+    const b = await page.locator('#ed .cm-table').boundingBox();
+    return { x: b.x + 20, y: b.y + b.height + 40 };
+  };
+  let f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await check(f, 'Escape', mid, () => f.page.keyboard.press('Escape'));
+    await check(f, 'Down', mid, () => f.page.keyboard.press('ArrowDown'));
+    await check(f, 'Picker', '', async () => { const p = await below(f.page)(); await f.page.mouse.click(p.x, p.y); });
+    await check(f, 'Last', last, async () => { const p = await below(f.page)(); await f.page.mouse.click(p.x, p.y); });
+    // Typing on the line right after a table, however the caret got there, starts a paragraph too.
+    await f.page.evaluate(() => createNote('Arrowed', '| a | b |\n| - | - |\n| 1 | 2 |\n\nEnd'));
+    await f.page.evaluate(() => { editor.view.focus(); editor.view.dispatch({ selection: { anchor: editor.text.indexOf('\n\nEnd') + 1 } }); });
+    await f.page.keyboard.type('After');
+    assert.match(await editorText(f.page), /\| 2 \|\n\nAfter\nEnd$/);
+    // Source mode keeps plain Markdown typing.
+    await f.page.keyboard.press('Control+e');
+    await f.page.evaluate(() => editor.view.dispatch({ selection: { anchor: editor.text.indexOf('| 2 |') + 5 } }));
+    await f.page.keyboard.press('Enter');
+    await f.page.keyboard.type('| 3 | 4 |');
+    assert.match(await editorText(f.page), /\| 2 \|\n\| 3 \| 4 \|\n\nAfter/);
+    await f.page.keyboard.press('Control+e');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+  // On a phone there is no Escape key: a tap below the table leaves it.
+  f = await fixture({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 760 } });
+  try {
+    await unlock(f.page); await settled(f.page);
+    await check(f, 'Tap', last, async () => { const p = await below(f.page)(); await f.page.touchscreen.tap(p.x, p.y); }, true);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

@@ -308,10 +308,31 @@ const LiveEditor = (() => {
       const at = tableRange(view, wrap); if (!at) return;
       view.focus();
       if (!after) { view.dispatch({ selection: { anchor: Math.max(0, at.from - 1) }, scrollIntoView: true }); return; }
-      // A table at the very end of the note gets an empty line after it to type on.
-      if (at.to >= view.state.doc.length) view.dispatch({ changes: { from: at.to, insert: '\n' } });
-      view.dispatch({ selection: { anchor: at.to + 1 }, scrollIntoView: true });
+      below(view, at.to);
     }
+    // Text on the line right after a table becomes its next row, so leaving a table puts the caret on an empty line
+    // with a blank one between, adding lines where the note has none. end is where the table's last row ends.
+    function below(view, end) {
+      const doc = view.state.doc;
+      let k = 0; while (k < 3 && doc.sliceString(end + k, end + k + 1) === '\n') k++;
+      const need = Math.max(0, (end + k === doc.length ? 2 : 3) - k);
+      view.dispatch({ changes: need ? { from: end, insert: '\n'.repeat(need) } : [], selection: { anchor: end + 2 }, scrollIntoView: true, userEvent: need ? 'input' : 'select' });
+    }
+    const inTable = (state, pos) => { for (let n = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) if (n.name === 'Table') return true; return false; };
+    // Where the table ends when pos is on the empty line right after one, else null.
+    function tableBefore(state, pos) {
+      const line = state.doc.lineAt(pos);
+      return !line.text.trim() && line.number > 1 && inTable(state, line.from - 1) ? line.from - 1 : null;
+    }
+    // Typing there (after arrowing onto that line, say) starts a paragraph below the table instead of a row.
+    // Left to the default while an IME composes; clicks and taps below a table are moved first (see the mousedown handler).
+    const typeBelow = EditorView.inputHandler.of((view, from, to, text) => {
+      const end = from === to && !view.composing && !text.startsWith('\n') ? tableBefore(view.state, from) : null;
+      if (end == null) return false;
+      below(view, end);
+      view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: 'input.type' });
+      return true;
+    });
     function cellMouse(view, wrap, e) {
       if (e.button !== 0) return;
       const cell = e.target.closest('[data-r]');
@@ -637,6 +658,14 @@ const LiveEditor = (() => {
       mousedown(e, view) {
         if (e.button !== 0) return false;
         const t = e.target instanceof Element ? e.target : null; if (!t) return false;
+        // A click or tap below a table, on the empty line after it or past the end of the note, lands where typing
+        // starts a paragraph (see below()); on a phone it is the way out of a table.
+        if (!source && !e.shiftKey && !t.closest('.cm-table')) {
+          const pos = view.posAtCoords({ x: e.clientX, y: e.clientY }), { state } = view, len = state.doc.length;
+          const end = pos == null ? null : tableBefore(state, pos) ??
+            (pos === len && inTable(state, len) && e.clientY > view.documentTop + view.lineBlockAt(len).bottom ? len : null);
+          if (end != null) { e.preventDefault(); view.focus(); below(view, end); return true; }
+        }
         const task = t.closest('.cm-task');
         if (task) { e.preventDefault(); toggleTask(view, view.posAtDOM(task)); return true; }
         // Rendered links open on click, like Obsidian. Tables handle their own clicks (see tableDOM).
@@ -681,7 +710,7 @@ const LiveEditor = (() => {
     /* ---------- editor ---------- */
     const mode = new Compartment();
     let source = false;
-    const modeExt = () => source ? EditorView.editorAttributes.of({ class: 'cm-source' }) : live;
+    const modeExt = () => source ? EditorView.editorAttributes.of({ class: 'cm-source' }) : [live, typeBelow];
     const extensions = () => [
       history(), language, styles, codeStyles, indentUnit.of('  '), EditorView.lineWrapping, focused, picked,
       EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
