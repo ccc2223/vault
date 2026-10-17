@@ -1,6 +1,6 @@
 'use strict';
 // Obsidian-style live preview on CodeMirror 6 (vendor/codemirror.min.js exposes it as CM).
-// Notes stay plain Markdown, but outside the element being edited the syntax is hidden and the note looks
+// Notes stay plain Markdown, and the syntax is hidden everywhere (revealing it under the cursor is behind the revealSyntax flag) so the note looks
 // rendered: headings, emphasis, links, images, task boxes, quotes, code and tables. Ctrl/Cmd+E shows the source.
 const LiveEditor = (() => {
   const {
@@ -40,6 +40,8 @@ const LiveEditor = (() => {
     create: () => false,
     update(v, tr) { for (const e of tr.effects) if (e.is(setFocus)) v = e.value; return v; }
   });
+  // Internal flag: reveal the Markdown symbols of the element under the cursor. Off by default; a settings option can enable it.
+  let revealSyntax = false;
   const WEB = /^(https?:|data:image\/)/i;
 
   // A clicked image is picked: it stays rendered, its Markdown is selected, and it shows resize handles.
@@ -126,7 +128,7 @@ const LiveEditor = (() => {
     /* ---------- live preview decorations ---------- */
     function build(state) {
       const doc = state.doc, out = [], focus = state.field(focused);
-      const touches = (from, to) => focus && state.selection.ranges.some(r => r.from <= to && r.to >= from);
+      const touches = (from, to) => revealSyntax && focus && state.selection.ranges.some(r => r.from <= to && r.to >= from);
       const onLine = pos => { const l = doc.lineAt(pos); return touches(l.from, l.to); };
       const hide = (from, to) => { if (from < to) out.push(Decoration.replace({}).range(from, to)); };
       const swap = (from, to, widget, block) => out.push(Decoration.replace({ widget, block }).range(from, to));
@@ -401,6 +403,7 @@ const LiveEditor = (() => {
       },
       // Re-resolve links and images after notes or attachments change.
       refresh() { view.dispatch({ effects: refresh.of(null) }); },
+      setRevealSyntax(on) { revealSyntax = !!on; view.dispatch({ effects: refresh.of(null) }); },
       setSource(on) { source = !!on; view.dispatch({ effects: mode.reconfigure(modeExt()) }); }
     };
   }
