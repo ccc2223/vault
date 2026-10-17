@@ -14,18 +14,19 @@ const ContextMenu = (() => {
     ['table', '#ed .cm-table'],
     ['editor', '#ed .cm-content'],
     ['note', '#list .item[data-p]'],
+    ['folder', '#list .dir[data-d]'],
     ['backlink', '#bl-body .b[data-p]'],
     ['sidebar', '#side'],
     ['toolbar', '#bar']
   ];
-  const LABELS = { image: 'Image', link: 'Link', table: 'Table', editor: 'Editor', note: 'Note', backlink: 'Backlink', sidebar: 'Notes list', toolbar: 'Toolbar', app: 'Vault' };
+  const LABELS = { image: 'Image', link: 'Link', table: 'Table', editor: 'Editor', note: 'Note', folder: 'Folder', backlink: 'Backlink', sidebar: 'Notes list', toolbar: 'Toolbar', app: 'Vault' };
   const providers = new Map();
   let menu = null, press = null, swallowClick = false, synthetic = false;
 
   function describe(target) {
     for (const [type, sel] of CONTEXTS) {
       const el = target.closest(sel);
-      if (el) return { type, el, target, path: el.dataset?.p };
+      if (el) return { type, el, target, path: el.dataset?.p ?? el.dataset?.d };
     }
     return { type: 'app', el: document.body, target };
   }
