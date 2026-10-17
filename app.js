@@ -309,6 +309,8 @@ function renderList() {
       ${snips.get(n.path) ? `<div class="s">${snips.get(n.path)}</div>` : ''}</div>`;
   }).join('') || '<div class="item" style="color:var(--mute)">No notes</div>';
   renderTags(tokens);
+  const open = live().reduce((sum, n) => sum + tasksOf(n.content).filter(t => !t.done).length, 0);
+  $('#tasks').textContent = '☑ Tasks' + (open ? ` (${open})` : '');
   const inTrash = trashed().length;
   $('#trash').textContent = '🗑 Trash' + (inTrash ? ` (${inTrash})` : '');
 }
@@ -635,6 +637,67 @@ $('#ol-list').addEventListener('click', e => {
   if (h) editor.goto(h.pos);
   if (innerWidth <= 800) toggleOutline(false);
 });
+
+/* ---------- tasks ---------- */
+// Task list items (- [ ] and - [x]) outside code blocks, as {done, text, pos}; pos is the [ ] box's offset.
+function tasksOf(content) {
+  const out = []; let fence = null, pos = 0;
+  for (const line of content.split('\n')) {
+    const f = /^\s*(?:>\s*)*(`{3,}|~{3,})/.exec(line);
+    if (f && (!fence || f[1][0] === fence[0] && f[1].length >= fence.length)) fence = fence ? null : f[1];
+    else if (!fence) {
+      const m = /^(\s*(?:>\s*)*(?:[-*+]|\d+[.)])\s+)\[([ xX])\](?:\s+(.*))?$/.exec(line);
+      if (m) out.push({ done: m[2] !== ' ', text: (m[3] || '').trim(), pos: pos + m[1].length });
+    }
+    pos += line.length + 1;
+  }
+  return out;
+}
+let taskRows = [];
+function drawTasks() {
+  const done = $('#tk-done').checked, groups = [];
+  taskRows = [];
+  for (const n of live().sort((a, b) => b.mtime - a.mtime)) {
+    const list = tasksOf(n.path === cur ? editor.text : n.content).filter(t => done || !t.done);
+    if (list.length) groups.push([n, list]);
+  }
+  const open = live().reduce((sum, n) => sum + tasksOf(n.content).filter(t => !t.done).length, 0);
+  $('#tk-sum').textContent = open + ' open task' + (open === 1 ? '' : 's');
+  $('#tk-list').innerHTML = groups.map(([n, list]) => `<div class="g">${esc(rel(n.path).replace(/\.md$/i, ''))}</div>` + list.map(t => {
+    const i = taskRows.push({ path: n.path, ...t }) - 1;
+    return `<label class="t${t.done ? ' done' : ''}" data-i="${i}"><input type="checkbox"${t.done ? ' checked' : ''}><span>${esc(t.text) || '&nbsp;'}</span></label>`;
+  }).join('')).join('') || `<div class="none">${done ? 'No tasks yet. Start a line with - [ ] to add one.' : 'No open tasks.'}</div>`;
+}
+function openTasks() {
+  Auth.ensure();
+  for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
+  drawTasks(); $('#dlg-tasks').showModal();
+}
+// Tick or untick a task where it is now; in the open note this is an undoable edit.
+function toggleTask(row) {
+  const n = notes.get(row.path); if (!n) return;
+  const text = row.path === cur ? editor.text : n.content;
+  const t = tasksOf(text).find(x => x.pos === row.pos && x.text === row.text) || tasksOf(text).find(x => x.text === row.text && x.done === row.done);
+  if (!t) return;
+  const mark = t.done ? ' ' : 'x';
+  if (row.path === cur) editor.view.dispatch({ changes: { from: t.pos + 1, to: t.pos + 2, insert: mark }, userEvent: 'input' });
+  else { beforeEdit(n); n.content = text.slice(0, t.pos + 1) + mark + text.slice(t.pos + 2); touch(n); }
+}
+$('#tk-list').addEventListener('click', async e => {
+  const row = e.target.closest('label[data-i]'); if (!row) return;
+  e.preventDefault();
+  const task = taskRows[+row.dataset.i];
+  if (e.target.matches('input')) { toggleTask(task); drawTasks(); return; }
+  // Clicking the text opens the note at the task.
+  $('#dlg-tasks').close();
+  if (task.path !== cur) await openNote(task.path);
+  const t = tasksOf(editor.text).find(x => x.text === task.text);
+  if (t) editor.goto(t.pos);
+});
+$('#tk-done').onchange = drawTasks;
+$('#tk-close').onclick = () => $('#dlg-tasks').close();
+$('#dlg-tasks').addEventListener('click', e => { if (e.target === $('#dlg-tasks')) $('#dlg-tasks').close(); });
+$('#tasks').onclick = openTasks;
 
 /* ---------- trash and history dialog ---------- */
 let histTrash = false, histItems = [], histSel = 0;
@@ -1212,6 +1275,7 @@ $('#cmd').onclick = () => openCommands();
   command('Show note history', () => openHistory(false), '', hasNote);
   command('Open trash', () => openHistory(true));
   command('Toggle outline', () => toggleOutline(), '', hasNote);
+  command('Show tasks', openTasks);
   command('Show tags', () => { document.body.classList.add('drawer'); $('#tags').open = true; $('#tag-list button')?.focus(); });
   command('Insert table…', () => $('#tbl').click(), '', hasNote);
   command('Insert image…', () => $('#img').click(), '', hasNote);
@@ -1266,6 +1330,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - **Alt+D** or 📅 opens today's note in \`Daily/\`; notes in \`Templates/\` become templates
 - **Ctrl/Cmd+P** every command · **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
+- **Tasks** in the sidebar collects open \`- [ ]\` items from every note
 - Add #tags anywhere; click one, or pick it under Tags in the sidebar, to see every note with it
 - Set up sync with the ⚙ button
 
@@ -1287,7 +1352,7 @@ const App = {
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
-    versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash').textContent = '🗑 Trash';
+    versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash').textContent = '🗑 Trash'; $('#tasks').textContent = '☑ Tasks'; $('#tk-list').replaceChildren(); taskRows = [];
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     for (const input of document.querySelectorAll('input[type=password]')) input.value = '';
     $('#status').textContent = 'Locked'; document.body.classList.remove('drawer');

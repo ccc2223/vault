@@ -95,6 +95,7 @@ input,textarea{font:inherit;color:inherit}
 #ed .cm-bullet{display:inline-block;width:1.1em;color:var(--mute)}
 #ed .cm-indent{display:inline-block}
 #ed .cm-task{margin:0 .45em 0 .1em;vertical-align:middle;cursor:pointer;accent-color:var(--accent)}
+@media (pointer:coarse){#ed .cm-task{width:20px;height:20px;margin-right:.55em}}
 #ed .cm-done{color:var(--mute);text-decoration:line-through}
 #ed img{max-width:100%;height:auto;vertical-align:bottom}
 #ed .cm-img{position:relative;display:inline-block;max-width:100%;vertical-align:bottom;cursor:default}
@@ -154,8 +155,20 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #tag-list .n{opacity:.65;font-size:11px}
 #tag-list .none{color:var(--mute)}
 #ed .cm-tag{color:var(--accent);background:rgba(124,92,255,.12);border-radius:10px;padding:0 4px;cursor:pointer}
-#trash{margin:4px 6px;background:none;border-color:transparent;text-align:left;color:var(--mute)}
-#trash:hover{border-color:var(--border);color:var(--fg)}
+#trash,#tasks{margin:2px 6px;background:none;border-color:transparent;text-align:left;color:var(--mute)}
+#tasks{margin-top:6px}
+#trash:hover,#tasks:hover{border-color:var(--border);color:var(--fg)}
+#tk-list{margin-top:8px;max-height:60vh;overflow:auto}
+#tk-list .g{font-size:12px;font-weight:600;color:var(--mute);margin:10px 0 2px}
+#tk-list .g:first-child{margin-top:0}
+#tk-list label.t{display:flex;gap:8px;align-items:flex-start;margin:0;padding:4px 6px;border-radius:6px;color:var(--fg);font-size:15px;cursor:pointer}
+#tk-list label.t:hover{background:var(--bg2)}
+#tk-list label.t input{width:auto;margin:4px 0 0;accent-color:var(--accent);cursor:pointer}
+#tk-list label.done span{color:var(--mute);text-decoration:line-through}
+#tk-list .none{color:var(--mute)}
+#dlg-tasks .opts{display:flex;align-items:center;justify-content:space-between;gap:8px}
+#dlg-tasks .opts label{display:flex;gap:6px;align-items:center;margin:0}
+#dlg-tasks .opts input{width:auto}
 #dlg-hist{width:min(820px,94vw)}
 #h-body{display:grid;grid-template-columns:minmax(180px,1fr) 2fr;gap:10px;margin-top:10px}
 #h-list{max-height:55vh;overflow:auto}
@@ -234,6 +247,7 @@ button:disabled{opacity:.6;cursor:wait}
   </div>
   <div id="list"></div>
   <details id="tags"><summary id="tags-sum">Tags</summary><div id="tag-list"></div></details>
+  <button id="tasks" title="Open tasks across notes">☑ Tasks</button>
   <button id="trash" title="Deleted notes">🗑 Trash</button>
   <div id="status">Local only</div>
 </aside>
@@ -296,6 +310,13 @@ button:disabled{opacity:.6;cursor:wait}
   <div id="h-body"><div id="h-list"></div><pre id="h-view"></pre></div>
   <p id="h-err" class="hint" role="alert"></p>
   <div class="row"><button id="h-empty">Empty trash</button><button id="h-forget">Delete forever</button><button id="h-close">Close</button><button id="h-restore" class="on">Restore</button></div>
+</dialog>
+
+<dialog id="dlg-tasks">
+  <h3 style="margin:0">Tasks</h3>
+  <div class="opts"><p id="tk-sum" class="hint"></p><label><input id="tk-done" type="checkbox"> Show completed</label></div>
+  <div id="tk-list"></div>
+  <div class="row"><button id="tk-close">Close</button></div>
 </dialog>
 
 <dialog id="dlg-cmd">
