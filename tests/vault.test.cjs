@@ -47,11 +47,15 @@ async function fixture({ legacy = true, serviceWorkers = 'block' } = {}) {
       const sha = pathname.split('/').pop();
       const note = [...remote.values()].find(n => n.sha === sha);
       if (state.failBlob === sha) { status = 500; body = { message: 'Upstream error' }; }
-      else body = { content: Buffer.from(note?.content || '').toString('base64') };
+      else body = { content: note?.b64 ?? Buffer.from(note?.content || '').toString('base64') };
     } else if (pathname.startsWith('/gh/contents/')) {
       const name = decodeURIComponent(pathname.slice('/gh/contents/'.length));
       if (req.method() === 'DELETE') remote.delete(name);
-      else { const n = { sha: 'hash-' + Math.random(), content: Buffer.from(req.postDataJSON().content, 'base64').toString() }; remote.set(name, n); body = { content: { sha: n.sha } }; }
+      else {
+        const b64 = req.postDataJSON().content;
+        const n = { sha: 'hash-' + Math.random(), content: Buffer.from(b64, 'base64').toString(), b64 };
+        remote.set(name, n); body = { content: { sha: n.sha } };
+      }
     } else { status = 404; }
     await route.fulfill({ status, headers, body: JSON.stringify(body) }).catch(() => {});
   });
@@ -568,6 +572,100 @@ test('space changes from two devices merge instead of creating conflict copies',
     assert.equal(await f.page.locator('#space-name').textContent(), 'Main');
     assert.equal(await f.page.evaluate(() => live().some(n => n.path === 'Work/Home.md')), true);
     assert.deepEqual(await f.page.evaluate(() => activeSpaces().map(s => s.folder).sort()), ['', 'Journal']);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const isImageBytes = b => b.subarray(0, 4).toString('latin1') === 'RIFF' || b.subarray(1, 4).toString('latin1') === 'PNG';
+const shown = (page, n) => page.waitForFunction(n => {
+  const imgs = [...document.querySelectorAll('#pv img.att')];
+  return imgs.length === n && imgs.every(i => i.src.startsWith('blob:') && i.complete && i.naturalWidth > 0);
+}, n);
+
+test('pasted images shrink, stay encrypted on the device, sync to attachments/ and still show offline', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      const c = document.createElement('canvas'); c.width = 3000; c.height = 1500;
+      const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 3000, 1500); g.fillStyle = '#3c3'; g.fillRect(0, 0, 1500, 750);
+      const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+      const dt = new DataTransfer(); dt.items.add(new File([blob], 'image.png', { type: 'image/png' }));
+      const ta = document.getElementById('ta'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    await f.page.waitForFunction(() => /Added 1 image/.test(document.getElementById('status').textContent));
+    await settled(f.page);
+    const name = await f.page.evaluate(() => [...files.keys()][0]);
+    assert.match(name, /^attachments\/Pasted image \d{14}\.(webp|png)$/);
+    assert.equal(await f.page.locator('#ta').inputValue(), secret + `![[${name.slice('attachments/'.length)}]]`);
+    await shown(f.page, 1);
+    assert.equal(await f.page.evaluate(() => document.querySelector('#pv img.att').naturalWidth), 2000);
+
+    // Bytes on the device are ciphertext, and the name only lives inside the sealed vault.
+    const head = await f.page.evaluate(() => new Promise(resolve => {
+      const q = Auth.store.db.transaction('files').objectStore('files').getAll();
+      q.onsuccess = () => resolve(q.result.map(r => [...new Uint8Array(r.data).subarray(0, 8)]));
+    }));
+    assert.equal(head.length, 1);
+    assert.equal(isImageBytes(Buffer.from(head[0])), false);
+    assert.equal(JSON.stringify(await raw(f.page)).includes('Pasted image'), false);
+
+    f.state.calls.length = 0;
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.ok(isImageBytes(Buffer.from(f.remote.get(name).b64, 'base64')));
+    const puts = f.state.calls.filter(c => c.method === 'PUT').map(c => decodeURIComponent(c.pathname));
+    assert.deepEqual(puts, ['/gh/contents/' + name, '/gh/contents/Secret draft.md'], 'images upload before the note that embeds them');
+
+    await f.page.locator('#lock').click(); await locked(f.page);
+    assert.equal(await f.page.evaluate(() => urls.size + files.size), 0);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    await shown(f.page, 1);
+
+    // Changing the password re-encrypts images along with the notes.
+    f.state.offline = false; f.state.password = 'new longer password for test';
+    await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
+    await f.page.locator('#lock').click(); await locked(f.page);
+    await unlock(f.page, f.state.password); await settled(f.page);
+    await shown(f.page, 1);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('images from GitHub download and embed with Obsidian and Markdown syntax; conflicts keep both copies', async () => {
+  const f = await fixture();
+  try {
+    f.remote.set('photos/attachments/beach.png', { sha: 'beach-1', b64: PNG_1PX });
+    f.remote.set('photos/Trip.md', { sha: 'trip-1', content: '![[beach.png|50]]\n![Beach](attachments/beach.png)\n![](gone.png)\n[[beach.png]]' });
+    f.remote.set('.obsidian/icon.png', { sha: 'ignored', b64: PNG_1PX });
+    await unlock(f.page); await settled(f.page);
+    assert.deepEqual(await f.page.evaluate(() => [...files.keys()]), ['photos/attachments/beach.png']);
+    await f.page.evaluate(() => openNote('photos/Trip.md'));
+    await shown(f.page, 2);
+    assert.equal(await f.page.locator('#pv img.att').first().getAttribute('width'), '50');
+    assert.equal(await f.page.locator('#pv .att.missing').textContent(), 'gone.png');
+    assert.equal(await f.page.locator('#pv a.wikilink[data-att]').count(), 1);
+
+    // A new image here and a different one on GitHub under the same name: both are kept.
+    await f.page.evaluate(async () => {
+      const id = await Auth.store.putFile(Uint8Array.from(atob('R0lGODlhAQABAAAAACw='), c => c.charCodeAt(0)));
+      files.set('attachments/dup.gif', { path: 'attachments/dup.gif', id, size: 14, mtime: Date.now(), sha: null, dirty: true });
+      await DB.replace();
+    });
+    f.remote.set('attachments/dup.gif', { sha: 'dup-remote', b64: 'R0lGODlhAgACAAAAACw=' });
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    const conflict = [...f.remote.keys()].find(k => k.startsWith('attachments/dup (conflict '));
+    assert.match(conflict, /^attachments\/dup \(conflict \d{4}-\d\d-\d\d\)\.gif$/);
+    assert.equal(f.remote.get(conflict).b64, 'R0lGODlhAgACAAAAACw=');
+    assert.equal(f.remote.get('attachments/dup.gif').b64, 'R0lGODlhAQABAAAAACw=');
+
+    // Deleting an image on GitHub removes it here too.
+    f.remote.delete('photos/attachments/beach.png');
+    await f.page.evaluate(() => App.sync()); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => files.has('photos/attachments/beach.png')), false);
+    assert.equal(await f.page.locator('#pv .att.missing').count(), 3);
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

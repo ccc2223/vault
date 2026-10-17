@@ -56,7 +56,8 @@ input,textarea{font:inherit;color:inherit}
 #pv blockquote{margin:0;padding:0 14px;border-left:3px solid var(--accent);color:var(--mute)}
 #pv table{border-collapse:collapse}
 #pv th,#pv td{border:1px solid var(--border);padding:4px 10px}
-#pv img{max-width:100%}
+#pv img{max-width:100%;height:auto}
+#pv .att.missing{color:var(--mute);border:1px dashed var(--border);border-radius:4px;padding:1px 6px;font-size:13px}
 #pv a{color:var(--accent)}
 #pv a.wikilink{text-decoration:none;border-bottom:1px solid var(--accent);cursor:pointer}
 #pv a.wikilink.missing{opacity:.6;border-bottom-style:dashed}
@@ -134,6 +135,8 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="m-edit">Edit</button>
     <button id="m-split">Split</button>
     <button id="m-view">View</button>
+    <button id="img" title="Add image (or paste or drop one into the editor)">🖼</button>
+    <input id="img-in" type="file" accept="image/*" multiple hidden>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)">⌕</button>
     <button id="sync" title="Sync (Ctrl/Cmd+S)">⇅</button>
     <button id="del" title="Delete note">🗑</button>
