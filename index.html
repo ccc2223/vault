@@ -147,6 +147,12 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #ctx button.danger:not(:disabled){color:var(--danger)}
 #ctx hr{border:0;border-top:1px solid var(--border);margin:4px 2px}
 @media (pointer:coarse){#ctx button{padding:10px 12px}}
+#tpick{position:fixed;z-index:30;padding:8px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.3);user-select:none;touch-action:none}
+#tpick .grid{display:grid;gap:3px;outline:0}
+#tpick .grid span{width:18px;height:18px;border:1px solid var(--border);border-radius:3px;background:var(--bg)}
+#tpick .grid span.on{background:var(--accent);border-color:var(--accent)}
+#tpick .size{margin-top:6px;text-align:center;color:var(--mute);font-size:13px}
+@media (pointer:coarse){#tpick .grid span{width:26px;height:26px}}
 @media(max-width:800px){
   #side{position:fixed;z-index:20;top:0;bottom:0;left:0;transform:translateX(-100%);transition:transform .2s;width:84vw;max-width:320px}
   body.drawer #side{transform:none}
@@ -254,6 +260,7 @@ button:disabled{opacity:.6;cursor:wait}
 <script src="auth.js"></script>
 <script src="app.js"></script>
 <script src="contextmenu.js"></script>
+<script src="tablepicker.js"></script>
 
 </body>
 </html>
