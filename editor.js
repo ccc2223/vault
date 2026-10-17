@@ -24,6 +24,19 @@ const LiveEditor = (() => {
       }
     }]
   };
+  // #tags, like Obsidian: letters, digits, _, - and / (for nested tags), not only digits, after a space or line start.
+  const TAG = /^#[\p{L}\p{N}_\-/]*[\p{L}_\-/][\p{L}\p{N}_\-/]*/u;
+  const Hashtags = {
+    defineNodes: ['Hashtag'],
+    parseInline: [{
+      name: 'Hashtag',
+      parse(cx, next, pos) {
+        if (next !== 35 || (pos > cx.offset && !/[\s(]/.test(cx.slice(pos - 1, pos)))) return -1;
+        const m = TAG.exec(cx.slice(pos, Math.min(cx.end, pos + 200)));
+        return m ? cx.addElement(cx.elt('Hashtag', pos, pos + m[0].length)) : -1;
+      }
+    }]
+  };
   // Code blocks are parsed in the language named after the fence: ```js, ```python, ```bash and so on.
   const ALIASES = {
     js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript', ts: 'typescript',
@@ -42,7 +55,7 @@ const LiveEditor = (() => {
   }
   // GFM like the preview (tables, task lists, strikethrough, bare URLs), keeping lang-markdown's list commands.
   const language = new Language(commonmarkLanguage.data, commonmarkLanguage.parser.configure([
-    GFM, WikiLinks, parseCode({ codeParser: info => codeLanguage(info)?.parser || null })
+    GFM, WikiLinks, Hashtags, parseCode({ codeParser: info => codeLanguage(info)?.parser || null })
   ]), [], 'markdown');
   const styles = syntaxHighlighting(HighlightStyle.define([
     { tag: tags.processingInstruction, class: 'cm-md-mark' },
@@ -517,6 +530,7 @@ const LiveEditor = (() => {
             return false;
           }
           else if (name === 'WikiLink') wikilink(node, 2);
+          else if (name === 'Hashtag') mark(node.from, node.to, 'cm-tag', { 'data-tag': text(node.from + 1, node.to) });
           else if (name === 'Embed') {
             const m = WIKI.exec(text(node.from, node.to)), target = m[2].trim(), alias = (m[4] || '').trim();
             if (!hooks.isImage(target)) return wikilink(node, 3);
@@ -626,6 +640,8 @@ const LiveEditor = (() => {
         const task = t.closest('.cm-task');
         if (task) { e.preventDefault(); toggleTask(view, view.posAtDOM(task)); return true; }
         // Rendered links open on click, like Obsidian. Tables handle their own clicks (see tableDOM).
+        const tag = t.closest('.cm-tag[data-tag]');
+        if (tag && !e.shiftKey) { e.preventDefault(); hooks.tag(tag.dataset.tag); return true; }
         const a = t.closest('.wikilink[data-target], .wikilink[data-att], .cm-link[data-href]');
         if (a && !e.shiftKey) { e.preventDefault(); follow(a); return true; }
         if (t.closest('.cm-handle')) { e.preventDefault(); return true; }

@@ -28,7 +28,7 @@ const DB = {
 const notes = new Map();   // path -> {path, content, mtime, sha, dirty, deleted}
 const files = new Map();   // path -> {path, id, size, mtime, sha, dirty}; bytes are encrypted separately by id
 let cur = null;            // current path
-let index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map() };
+let index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map(), tags: new Map(), noteTags: new Map() };
 
 /* ---------- spaces ---------- */
 // A space is a top-level folder listed in .vault/spaces.json. Main ('') holds every note outside those folders.
@@ -69,13 +69,29 @@ function mergeSpaces(local, remote) {
   return spacesJSON([...by.values()]);
 }
 
+// #tags as the editor finds them (see editor.js): not in code, and after a space, a bracket or the line start.
+const TAGS = /(^|[\s(])#([\p{L}\p{N}_\-/]*[\p{L}_\-/][\p{L}\p{N}_\-/]*)/gu;
+function tagsIn(content) {
+  const text = content.replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, '').replace(/(`+)[^`]*?\1/g, '');
+  return [...text.matchAll(TAGS)].map(m => m[2]);
+}
+// A search for #tag finds that tag and the tags nested under it (#tag/sub).
+const hasTag = (path, tag) => [...index.noteTags.get(path) || []].some(t => t === tag || t.startsWith(tag + '/'));
+
 function rebuildIndex() {
   loadSpaces();
-  index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map() };
+  index = { byPath: new Map(), byBase: new Map(), fileByPath: new Map(), fileByBase: new Map(), tags: new Map(), noteTags: new Map() };
   for (const n of live().sort((a, b) => a.path.length - b.path.length)) {
     index.byPath.set(rel(n.path).toLowerCase(), n.path);
     const b = baseName(n.path).toLowerCase();
     if (!index.byBase.has(b)) index.byBase.set(b, n.path);
+    const mine = new Set();
+    for (const tag of tagsIn(n.content)) {
+      const key = tag.toLowerCase();
+      if (!index.tags.has(key)) index.tags.set(key, { name: tag, paths: new Set() });
+      index.tags.get(key).paths.add(n.path); mine.add(key);
+    }
+    index.noteTags.set(n.path, mine);
   }
   for (const f of liveFiles().sort((a, b) => a.path.length - b.path.length)) {
     index.fileByPath.set(rel(f.path).toLowerCase(), f.path);
@@ -273,7 +289,7 @@ function renderList() {
   if (tokens.length) {
     arr = arr.filter(n => {
       const hay = (rel(n.path) + '\n' + n.content).toLowerCase();
-      return tokens.every(t => hay.includes(t));
+      return tokens.every(t => /^#./.test(t) ? hasTag(n.path, t.slice(1)) : hay.includes(t));
     });
     arr.sort((a, b) => {
       const sa = tokens.every(t => baseName(a.path).toLowerCase().includes(t)) ? 0 : 1;
@@ -292,9 +308,28 @@ function renderList() {
       ${folder ? `<div class="f">${esc(folder)}</div>` : ''}
       ${snips.get(n.path) ? `<div class="s">${snips.get(n.path)}</div>` : ''}</div>`;
   }).join('') || '<div class="item" style="color:var(--mute)">No notes</div>';
+  renderTags(tokens);
   const inTrash = trashed().length;
   $('#trash').textContent = '🗑 Trash' + (inTrash ? ` (${inTrash})` : '');
 }
+
+/* ---------- tags ---------- */
+function renderTags(tokens = []) {
+  const list = [...index.tags.values()].sort((a, b) => b.paths.size - a.paths.size || a.name.localeCompare(b.name));
+  $('#tags-sum').textContent = `Tags (${list.length})`;
+  $('#tag-list').innerHTML = list.map(t => `<button class="tag${tokens.includes('#' + t.name.toLowerCase()) ? ' on' : ''}" data-tag="${esc(t.name)}">#${esc(t.name)} <span class="n">${t.paths.size}</span></button>`).join('') ||
+    '<div class="none">No tags yet. Type #tag in a note.</div>';
+}
+// Clicking a tag searches for it; clicking the tag being searched clears the search.
+function searchTag(tag) {
+  const q = '#' + tag;
+  $('#q').value = $('#q').value.trim().toLowerCase() === q.toLowerCase() ? '' : q;
+  renderList();
+  document.body.classList.add('drawer');
+}
+$('#tag-list').addEventListener('click', e => { const b = e.target.closest('button[data-tag]'); if (b) searchTag(b.dataset.tag); });
+$('#tags').addEventListener('toggle', () => { try { localStorage.setItem('vault.tags', $('#tags').open ? 'open' : ''); } catch {} });
+try { $('#tags').open = localStorage.getItem('vault.tags') === 'open'; } catch {}
 
 /* ---------- backlinks ---------- */
 function renderBacklinks() {
@@ -425,6 +460,7 @@ const editor = LiveEditor.create($('#ed'), {
   resolveImage: target => resolveFile(target),
   noteExists: target => !!resolve(target),
   isImage: name => IMAGE.test(name),
+  tag: tag => searchTag(tag),
   fileName, renderInline
 });
 $('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
@@ -497,17 +533,20 @@ $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[da
 $('#q').addEventListener('input', renderList);
 
 /* [[ autocomplete */
-let sugItems = [], sugSel = 0, sugStart = -1;
+let sugItems = [], sugSel = 0, sugStart = -1, sugTag = false;
 function hideSug() { $('#sug').style.display = 'none'; sugItems = []; }
 function updateSug() {
   const pos = editor.pos, before = editor.lineBefore();
-  const m = /\[\[([^\]\n|]*)$/.exec(before);
+  const m = /\[\[([^\]\n|]*)$/.exec(before), t = !m && /(?:^|[\s(])#([\p{L}\p{N}_\-/]+)$/u.exec(before);
   const box = $('#sug');
-  if (!m) { hideSug(); return; }
-  sugStart = pos - m[1].length - 2;
-  const q = m[1].toLowerCase();
-  // After ![[ suggest images, otherwise notes.
-  sugItems = before[before.length - m[0].length - 1] === '!'
+  if (!m && !t) { hideSug(); return; }
+  sugTag = !!t;
+  sugStart = t ? pos - t[1].length - 1 : pos - m[1].length - 2;
+  const q = (t || m)[1].toLowerCase();
+  // After # suggest tags, after ![[ images, otherwise notes.
+  sugItems = t ? [...index.tags.values()].filter(x => x.name.toLowerCase().startsWith(q) && x.name.toLowerCase() !== q)
+      .sort((a, b) => b.paths.size - a.paths.size).slice(0, 8).map(x => '#' + x.name)
+    : before[before.length - m[0].length - 1] === '!'
     ? liveFiles().filter(f => fileName(f.path).toLowerCase().includes(q)).sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(f => fileName(f.path))
     : live().filter(n => baseName(n.path).toLowerCase().includes(q) && n.path !== cur)
       .sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(n => baseName(n.path));
@@ -525,7 +564,7 @@ function drawSug() {
 }
 function pickSug(i) {
   const name = sugItems[i]; if (name == null) return;
-  editor.insert('[[' + name + ']]', sugStart, editor.pos);
+  editor.insert(sugTag ? name + ' ' : '[[' + name + ']]', sugStart, editor.pos);
   hideSug();
 }
 $('#sug').addEventListener('mousedown', e => { e.preventDefault(); const d = e.target.closest('div[data-i]'); if (d) pickSug(+d.dataset.i); });
@@ -1066,6 +1105,7 @@ $('#cmd').onclick = openCommands;
   command('Move note to trash', deleteNote, '', hasNote);
   command('Show note history', () => openHistory(false), '', hasNote);
   command('Open trash', () => openHistory(true));
+  command('Show tags', () => { document.body.classList.add('drawer'); $('#tags').open = true; $('#tag-list button')?.focus(); });
   command('Insert table…', () => $('#tbl').click(), '', hasNote);
   command('Insert image…', () => $('#img').click(), '', hasNote);
   // Turns the current line (or list item) into a task, like Obsidian's "Toggle checklist".
@@ -1117,6 +1157,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - Backlinks appear under the editor
 - **Ctrl/Cmd+P** every command · **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
+- Add #tags anywhere; click one, or pick it under Tags in the sidebar, to see every note with it
 - Set up sync with the ⚙ button
 
 - [ ] Try a task item
@@ -1133,6 +1174,7 @@ const App = {
     editor.load(''); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
+    $('#tag-list').replaceChildren(); $('#tags-sum').textContent = 'Tags';
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
