@@ -1,7 +1,8 @@
 // Cache only the public app shell. Notes and authentication responses never enter Cache Storage.
-const CACHE = 'vault-v3-secure-5';
+const CACHE = 'vault-v3-secure-6';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg',
-  'secure-store.js', 'auth.js', 'app.js', 'vendor/marked.min.js', 'vendor/purify.min.js'];
+  'secure-store.js', 'auth.js', 'editor.js', 'app.js', 'vendor/marked.min.js', 'vendor/purify.min.js',
+  'vendor/codemirror.min.js'];
 const shellURLs = new Set(CORE.map(path => new URL(path, self.registration.scope).href));
 
 self.addEventListener('install', event => {

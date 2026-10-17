@@ -153,10 +153,10 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
     node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer');
   }
 });
-function renderPreview() {
-  const n = notes.get(cur);
-  $('#pv').innerHTML = n ? DOMPurify.sanitize(marked.parse(n.content)) : '';
-  loadImages();
+// The editor renders most Markdown itself; marked draws blocks it shows whole, such as tables.
+function renderInto(el, md) {
+  el.innerHTML = DOMPurify.sanitize(marked.parse(md));
+  loadImages(el);
 }
 // Decrypted images are shown through object URLs that live in memory only and are revoked on lock.
 let urls = new Map();      // attachment id -> Promise<object URL>
@@ -171,9 +171,9 @@ function attachmentURL(f) {
   }
   return urls.get(f.id);
 }
-function loadImages() {
+function loadImages(root) {
   const epoch = Auth.epoch;
-  for (const img of $('#pv').querySelectorAll('img[data-att]')) {
+  for (const img of root.querySelectorAll('img[data-att]')) {
     const f = files.get(img.dataset.att); if (!f) continue;
     attachmentURL(f).then(u => { if (epoch === Auth.epoch && img.isConnected) img.src = u; })
       .catch(() => { if (epoch === Auth.epoch && img.isConnected) img.outerHTML = missingImg(fileName(f.path)); });
@@ -194,7 +194,7 @@ function touch(n) {
     saveT = null;
     try {
       await DB.put(n);
-      rebuildIndex(); renderBacklinks(); renderList();
+      rebuildIndex(); renderBacklinks(); renderList(); editor.refresh();
       scheduleSync(15000);
     } catch (error) { if (Auth.active) setStatus('Could not save: ' + error.message, true); }
   }, 400);
@@ -277,10 +277,10 @@ async function openNote(path) {
   // Remember the current space and the last note in each space (stored encrypted with the notes).
   const last = Auth.store.last && typeof Auth.store.last === 'object' ? Auth.store.last : { notes: {} };
   Auth.store.last = { space, notes: { ...last.notes, [space]: path } };
-  $('#ta').value = notes.get(path).content;
+  editor.load(notes.get(path).content);
   $('#title').textContent = baseName(path);
   document.title = baseName(path) + ' – Vault';
-  renderPreview(); renderBacklinks(); renderList();
+  renderBacklinks(); renderList();
   document.body.classList.remove('drawer');
 }
 function normPath(name) {
@@ -305,7 +305,7 @@ async function createNote(name, content = '') {
   const n = { path: p, content: content || `# ${baseName(p)}\n\n`, mtime: Date.now(), sha: null, dirty: true };
   notes.set(p, n); await DB.put(n);
   rebuildIndex(); await openNote(p);
-  const ta = $('#ta'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  editor.focus(true);
   scheduleSync(15000);
   return p;
 }
@@ -349,20 +349,29 @@ async function deleteNote() {
 }
 
 /* ---------- editor ---------- */
-const ta = $('#ta');
-let rpT = null;
-ta.addEventListener('input', () => {
-  const n = notes.get(cur); if (!n) return;
-  n.content = ta.value; touch(n);
-  clearTimeout(rpT); rpT = setTimeout(renderPreview, 150);
-  updateSug();
-});
-$('#pv').addEventListener('click', async e => {
-  const a = e.target.closest('a.wikilink'); if (!a) return;
-  e.preventDefault();
-  if (a.dataset.att) { const f = files.get(a.dataset.att); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); return; }
-  const t = a.dataset.target, p = resolve(t);
-  if (p) await openNote(p); else await createNote(t);
+// Live preview: Markdown is hidden except in the element being edited (see editor.js).
+async function followLink(target) { const p = resolve(target); if (p) await openNote(p); else await createNote(target); }
+async function openAttachment(path) { const f = files.get(path); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); }
+const editor = LiveEditor.create($('#ed'), {
+  change(text) { const n = notes.get(cur); if (!n) return; n.content = text; touch(n); },
+  cursor(typed) { if (typed) updateSug(); else hideSug(); },
+  keydown: e => sugKey(e),
+  paste(e) {
+    const list = imagesIn(e.clipboardData?.files);
+    if (!list.length) return false;
+    e.preventDefault(); tryAdd(list, true); return true;
+  },
+  drop(e) {
+    const list = imagesIn(e.dataTransfer.files);
+    if (list.length) tryAdd(list, false); else setStatus('Only images can be added to notes.', true);
+  },
+  follow: target => followLink(target).catch(error => { if (Auth.active) setStatus(error.message, true); }),
+  openAttachment: path => openAttachment(path).catch(() => {}),
+  imageURL(path) { const f = files.get(path); return f ? attachmentURL(f) : Promise.reject(new Error('Image not found')); },
+  resolveImage: target => resolveFile(target),
+  noteExists: target => !!resolve(target),
+  isImage: name => IMAGE.test(name),
+  fileName, renderInto
 });
 $('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
 
@@ -414,10 +423,8 @@ async function addImages(list, pasted) {
   if (links.length) {
     await DB.replace(); Auth.ensure(epoch); rebuildIndex();
     const text = links.join('\n');
-    if (cur === n.path) {
-      ta.setRangeText(text, ta.selectionStart, ta.selectionEnd, 'end');
-      ta.dispatchEvent(new Event('input'));
-    } else { n.content += (n.content.endsWith('\n') ? '' : '\n') + text; touch(n); }
+    if (cur === n.path) editor.insert(text);
+    else { n.content += (n.content.endsWith('\n') ? '' : '\n') + text; touch(n); }
     scheduleSync(15000);
   }
   setStatus(problems.length ? 'Could not add ' + problems.join('; ') + '.' : `Added ${links.length} image${links.length > 1 ? 's' : ''}`, problems.length > 0);
@@ -426,18 +433,6 @@ const imagesIn = list => [...(list || [])].filter(f => f.type.startsWith('image/
 function tryAdd(list, pasted) {
   addImages(list, pasted).catch(error => { if (Auth.active) setStatus('Could not add image: ' + error.message, true); });
 }
-ta.addEventListener('paste', e => {
-  const list = imagesIn(e.clipboardData?.files);
-  if (list.length) { e.preventDefault(); tryAdd(list, true); }
-});
-ta.addEventListener('dragover', e => { if ([...e.dataTransfer.items].some(i => i.kind === 'file')) e.preventDefault(); });
-ta.addEventListener('drop', e => {
-  if (!e.dataTransfer.files.length) return;
-  // Never let the browser navigate away to a dropped file.
-  e.preventDefault();
-  const list = imagesIn(e.dataTransfer.files);
-  if (list.length) tryAdd(list, false); else setStatus('Only images can be added to notes.', true);
-});
 $('#img').onclick = () => $('#img-in').click();
 $('#img-in').onchange = () => { const list = imagesIn($('#img-in').files); $('#img-in').value = ''; tryAdd(list, false); };
 $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[data-p]'); if (i) openNote(i.dataset.p); });
@@ -445,63 +440,55 @@ $('#q').addEventListener('input', renderList);
 
 /* [[ autocomplete */
 let sugItems = [], sugSel = 0, sugStart = -1;
+function hideSug() { $('#sug').style.display = 'none'; sugItems = []; }
 function updateSug() {
-  const pos = ta.selectionStart, before = ta.value.slice(0, pos);
+  const pos = editor.pos, before = editor.lineBefore();
   const m = /\[\[([^\]\n|]*)$/.exec(before);
   const box = $('#sug');
-  if (!m) { box.style.display = 'none'; sugItems = []; return; }
+  if (!m) { hideSug(); return; }
   sugStart = pos - m[1].length - 2;
   const q = m[1].toLowerCase();
   // After ![[ suggest images, otherwise notes.
-  sugItems = before[sugStart - 1] === '!'
+  sugItems = before[before.length - m[0].length - 1] === '!'
     ? liveFiles().filter(f => fileName(f.path).toLowerCase().includes(q)).sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(f => fileName(f.path))
     : live().filter(n => baseName(n.path).toLowerCase().includes(q) && n.path !== cur)
       .sort((a, b) => b.mtime - a.mtime).slice(0, 8).map(n => baseName(n.path));
   if (!sugItems.length) { box.style.display = 'none'; return; }
   sugSel = 0; drawSug(); box.style.display = 'block';
+  // Show the list under the [[ being typed, or above it near the bottom of the editor.
+  const at = editor.coords(sugStart), area = $('#panes').getBoundingClientRect();
+  if (!at) return;
+  box.style.left = Math.max(0, Math.min(at.left - area.left, area.width - box.offsetWidth - 8)) + 'px';
+  const below = at.bottom - area.top + 4;
+  box.style.top = (below + box.offsetHeight > area.height ? Math.max(0, at.top - area.top - box.offsetHeight - 4) : below) + 'px';
 }
 function drawSug() {
   $('#sug').innerHTML = sugItems.map((s, i) => `<div class="${i === sugSel ? 'sel' : ''}" data-i="${i}">${esc(s)}</div>`).join('');
 }
 function pickSug(i) {
   const name = sugItems[i]; if (name == null) return;
-  const pos = ta.selectionStart;
-  ta.value = ta.value.slice(0, sugStart) + '[[' + name + ']]' + ta.value.slice(pos);
-  const np = sugStart + name.length + 4;
-  ta.setSelectionRange(np, np);
-  $('#sug').style.display = 'none'; sugItems = [];
-  ta.dispatchEvent(new Event('input'));
-  $('#sug').style.display = 'none';
+  editor.insert('[[' + name + ']]', sugStart, editor.pos);
+  hideSug();
 }
 $('#sug').addEventListener('mousedown', e => { e.preventDefault(); const d = e.target.closest('div[data-i]'); if (d) pickSug(+d.dataset.i); });
-ta.addEventListener('keydown', e => {
-  const open = $('#sug').style.display === 'block' && sugItems.length;
-  if (open) {
-    if (e.key === 'ArrowDown') { e.preventDefault(); sugSel = (sugSel + 1) % sugItems.length; drawSug(); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); sugSel = (sugSel - 1 + sugItems.length) % sugItems.length; drawSug(); return; }
-    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickSug(sugSel); return; }
-    if (e.key === 'Escape') { $('#sug').style.display = 'none'; return; }
-  }
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    const s = ta.selectionStart, en = ta.selectionEnd;
-    ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
-    ta.setSelectionRange(s + 2, s + 2);
-    ta.dispatchEvent(new Event('input'));
-  }
-});
-ta.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
-
-/* ---------- modes ---------- */
-function setMode(m) {
-  $('#panes').className = m;
-  for (const k of ['edit', 'split', 'view']) $('#m-' + k).classList.toggle('on', k === m);
-  localStorage.setItem('vault.mode', m);
-  if (m !== 'edit') renderPreview();
+// Runs before the editor's own keys while the list is open.
+function sugKey(e) {
+  if ($('#sug').style.display !== 'block' || !sugItems.length) return false;
+  if (e.key === 'ArrowDown') sugSel = (sugSel + 1) % sugItems.length;
+  else if (e.key === 'ArrowUp') sugSel = (sugSel - 1 + sugItems.length) % sugItems.length;
+  else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickSug(sugSel); return true; }
+  else if (e.key === 'Escape') { hideSug(); return true; }
+  else return false;
+  e.preventDefault(); drawSug(); return true;
 }
-$('#m-edit').onclick = () => setMode('edit');
-$('#m-split').onclick = () => setMode('split');
-$('#m-view').onclick = () => setMode('view');
+editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
+
+/* ---------- source mode ---------- */
+// Ctrl/Cmd+E switches between live preview and the plain Markdown source, like Obsidian's Source mode.
+function setSource(on) {
+  editor.setSource(on);
+  localStorage.setItem('vault.mode', on ? 'source' : 'live');
+}
 
 /* ---------- quick switcher ---------- */
 let qsSel = 0, qsRes = [];
@@ -687,7 +674,7 @@ async function sync() {
       // Follow the open note if another device created or removed the space it belongs to.
       if (spaceOf(cur) !== space) { space = spaceOf(cur); rebuildIndex(); }
       showPulled(notes.get(cur));
-      if (images) renderPreview();
+      if (images) editor.refresh();
     }
     renderSpace(); renderList(); renderBacklinks();
     setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
@@ -711,11 +698,8 @@ async function pool(items, limit, fn) {
 // Show pulled text in the open editor at once, even when focused, so the next keystroke builds on it.
 // Only unedited notes are replaced; local edits keep their text and the remote copy becomes a conflict note.
 function showPulled(n) {
-  if (n.path !== cur || n.dirty || ta.value === n.content) return;
-  const start = ta.selectionStart, end = ta.selectionEnd;
-  ta.value = n.content;
-  ta.setSelectionRange(Math.min(start, ta.value.length), Math.min(end, ta.value.length));
-  renderPreview();
+  if (n.path !== cur || n.dirty || editor.text === n.content) return;
+  editor.replace(n.content);
 }
 
 /* ---------- spaces UI ---------- */
@@ -883,7 +867,7 @@ document.addEventListener('keydown', e => {
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); sync(); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); document.body.classList.add('drawer'); $('#q').focus(); }
-  else if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setMode($('#panes').className === 'edit' ? 'view' : 'edit'); }
+  else if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setSource(!editor.source); }
   else if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); $('#new').click(); }
 });
 window.addEventListener('beforeunload', e => {
@@ -901,8 +885,9 @@ const WELCOME = `# Welcome to Vault
 
 Your notes are plain markdown files, stored in this browser and synced to your own private GitHub repo.
 
-- Link notes with [[wikilinks]] — try [[Example Note]] (click it in the preview to create it)
-- Type \`[[\` in the editor to autocomplete note names
+- Link notes with [[wikilinks]] — try [[Example Note]] (click it to create it)
+- Type \`[[\` to autocomplete note names
+- Markdown symbols only show where you're editing; **Ctrl/Cmd+E** shows the whole source
 - Backlinks appear under the editor
 - **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
@@ -913,10 +898,10 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 const App = {
   snapshot() { return { notes: structuredClone([...notes.values()]), files: structuredClone([...files.values()]), last: structuredClone(Auth.store.last) }; },
   clear() {
-    clearTimeout(saveT); saveT = null; clearTimeout(syncT); clearTimeout(rpT);
+    clearTimeout(saveT); saveT = null; clearTimeout(syncT);
     notes.clear(); files.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
-    $('#ta').value = ''; $('#pv').replaceChildren(); $('#list').replaceChildren();
+    editor.load(''); $('#list').replaceChildren();
     $('#title').textContent = ''; document.title = 'Vault — Locked';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren();
@@ -934,7 +919,8 @@ const App = {
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;
     if (legacy || !last) Auth.store.last = { space: '', notes: {} };
     if (![...notes.values()].some(isNote)) await createNote('Welcome', WELCOME);
-    setMode(localStorage.getItem('vault.mode') || 'split');
+    // Older versions stored edit, split or view; all of them now open in live preview.
+    setSource(localStorage.getItem('vault.mode') === 'source');
     await switchSpace(legacy ? spaceOf(legacy) : last?.space || '', legacy || undefined);
     if (getCfg()) sync();
     else setStatus('Saved notes unlocked — offline or sign in in Settings to sync');
