@@ -439,6 +439,10 @@ const imagesIn = list => [...(list || [])].filter(f => f.type.startsWith('image/
 function tryAdd(list, pasted) {
   addImages(list, pasted).catch(error => { if (Auth.active) setStatus('Could not add image: ' + error.message, true); });
 }
+$('#tbl').onclick = () => {
+  const r = $('#tbl').getBoundingClientRect(), pos = editor.pos;
+  TablePicker.open(r.left, r.bottom + 4, (rows, cols) => { editor.insertTable(rows, cols, pos); });
+};
 $('#img').onclick = () => $('#img-in').click();
 $('#img-in').onchange = () => { const list = imagesIn($('#img-in').files); $('#img-in').value = ''; tryAdd(list, false); };
 $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[data-p]'); if (i) openNote(i.dataset.p); });
