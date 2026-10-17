@@ -27,7 +27,9 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Offline operation and installable PWA on phone and desktop
 - Markdown files compatible with Obsidian; `.obsidian` and other dotfolders are ignored
 
-Shortcuts: Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E live preview/source · Ctrl/Cmd+Shift+F search · Alt+N new note
+- Command palette (Ctrl/Cmd+P or ⋯): every action in one searchable list, recently used first
+
+Shortcuts: Ctrl/Cmd+P commands · Ctrl/Cmd+O switcher · Ctrl/Cmd+Shift+O spaces · Ctrl/Cmd+S sync · Ctrl/Cmd+E live preview/source · Ctrl/Cmd+Shift+F search · Alt+N new note
 
 ## Spaces
 

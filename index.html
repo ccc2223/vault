@@ -131,6 +131,12 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #qs-list{margin-top:8px;max-height:50vh;overflow:auto}
 #qs-list div{padding:7px 9px;border-radius:6px;cursor:pointer}
 #qs-list div.sel{background:var(--accent);color:#fff}
+#dlg-cmd{align-self:start;margin-top:12vh}
+#cmd-list{margin-top:8px;max-height:50vh;overflow:auto}
+#cmd-list div{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:6px;cursor:pointer}
+#cmd-list div.sel{background:var(--accent);color:#fff}
+#cmd-list div.none{color:var(--mute);cursor:default}
+#cmd-list kbd{margin-left:auto;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;opacity:.7}
 #back{display:none}
 #trash{margin:4px 6px;background:none;border-color:transparent;text-align:left;color:var(--mute)}
 #trash:hover{border-color:var(--border);color:var(--fg)}
@@ -221,6 +227,7 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="img" title="Add image (or paste or drop one into the editor)">🖼</button>
     <input id="img-in" type="file" accept="image/*" multiple hidden>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)">⌕</button>
+    <button id="cmd" title="Commands (Ctrl/Cmd+P)">⋯</button>
     <button id="sync" title="Sync (Ctrl/Cmd+S)">⇅</button>
     <button id="hist" title="Note history">🕘</button>
     <button id="del" title="Move note to trash">🗑</button>
@@ -268,6 +275,11 @@ button:disabled{opacity:.6;cursor:wait}
   <div id="h-body"><div id="h-list"></div><pre id="h-view"></pre></div>
   <p id="h-err" class="hint" role="alert"></p>
   <div class="row"><button id="h-empty">Empty trash</button><button id="h-forget">Delete forever</button><button id="h-close">Close</button><button id="h-restore" class="on">Restore</button></div>
+</dialog>
+
+<dialog id="dlg-cmd">
+  <input id="cmd-in" placeholder="Type a command…" autocomplete="off" aria-label="Command">
+  <div id="cmd-list"></div>
 </dialog>
 
 <dialog id="dlg-qs">
