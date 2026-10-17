@@ -1,6 +1,6 @@
 'use strict';
 // Set this to your sync server (Cloudflare Worker) URL so new devices only need the password.
-const SYNC_URL = '';
+const SYNC_URL = 'https://vault-sync-01.chriscleven.workers.dev';
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const baseName = p => p.replace(/^.*\//, '').replace(/\.md$/i, '');
