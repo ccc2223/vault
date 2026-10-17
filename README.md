@@ -20,6 +20,8 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 - Tables edit cell by cell like Obsidian: click a cell to edit it, Tab and Enter move between cells and add rows, the + buttons add rows and columns, and right-click a cell to insert, delete or align rows and columns
 - Code blocks show their language and a Copy button, are highlighted for common languages (```js, ```python, ```bash, ```sql and more), and stay editable in place
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
+- Heading links: `[[Note#Heading]]` opens the note at that heading, `[[#Heading]]` jumps within the note, and typing `#` after a note name in `[[` suggests its headings
+- Outline (≡): the note's headings, indented by level, with the one you're in highlighted. Click one to jump there
 - Backlinks, full-text search, quick switcher and folders via `folder/name`
 - `#tags`, highlighted in the editor: click one, or pick it under **Tags** in the sidebar (with counts), to list its notes. Searching `#tag` also finds nested tags like `#tag/sub`, and typing `#` suggests tags you already use
 - Spaces: separate sets of notes, each with its own links, search and backlinks

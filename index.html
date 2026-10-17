@@ -117,6 +117,14 @@ input,textarea{font:inherit;color:inherit}
 #sug{position:absolute;left:16px;top:12px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;max-height:200px;overflow:auto;min-width:200px;max-width:80%;display:none;z-index:5;box-shadow:0 4px 18px rgba(0,0,0,.25)}
 #sug div{padding:6px 10px;cursor:pointer}
 #sug div.sel,#sug div:hover{background:var(--accent);color:#fff}
+#outline{display:none;width:240px;flex:none;border-left:1px solid var(--border);background:var(--bg2);overflow:auto;font-size:13px}
+body.outline #outline{display:block}
+#outline .h{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;color:var(--mute);font-weight:600;position:sticky;top:0;background:var(--bg2)}
+#outline .h button{padding:0 6px;background:none;border-color:transparent}
+#ol-list div[data-i]{padding:4px 8px;margin:0 4px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#ol-list div[data-i]:hover{background:var(--bg3)}
+#ol-list div.cur{color:var(--accent);font-weight:600}
+#ol-list .none{color:var(--mute);padding:4px 10px}
 #bl{border-top:1px solid var(--border);background:var(--bg2);max-height:30%;overflow:auto;padding:6px 12px;font-size:13px}
 #bl summary{cursor:pointer;color:var(--mute);font-weight:600}
 #bl .b{padding:4px 0;cursor:pointer}
@@ -188,6 +196,7 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
   #ed .cm-codeblock,#ed .cm-quote{margin:0 14px}
   #ed .cm-table{padding:4px 14px}
   #bl{max-height:35%}
+  #outline{position:absolute;z-index:6;top:0;right:0;bottom:0;width:min(280px,80vw);box-shadow:-4px 0 18px rgba(0,0,0,.25)}
 }
 #lock-screen{display:none;position:fixed;inset:0;z-index:100;background:var(--bg);overflow:auto;padding:32px 20px}
 #unlock-form{max-width:420px;margin:5vh auto}
@@ -236,6 +245,7 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="tbl" title="Insert table">▦</button>
     <button id="img" title="Add image (or paste or drop one into the editor)">🖼</button>
     <input id="img-in" type="file" accept="image/*" multiple hidden>
+    <button id="ol-btn" title="Outline">≡</button>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)">⌕</button>
     <button id="cmd" title="Commands (Ctrl/Cmd+P)">⋯</button>
     <button id="sync" title="Sync (Ctrl/Cmd+S)">⇅</button>
@@ -247,6 +257,7 @@ button:disabled{opacity:.6;cursor:wait}
   <div id="panes">
     <div id="ed"></div>
     <div id="sug"></div>
+    <aside id="outline"><div class="h"><span>Outline</span><button id="ol-close" title="Close outline">✕</button></div><div id="ol-list"></div></aside>
   </div>
   <details id="bl" open><summary id="bl-sum">Backlinks</summary><div id="bl-body"></div></details>
 </section>
