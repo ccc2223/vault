@@ -177,6 +177,7 @@ const Auth = {
         await this.critical.catch(() => {});
         if (snapshot) {
           this.store.records = new Map(snapshot.notes.map(note => [note.path, note]));
+          this.store.files = new Map(snapshot.files.map(file => [file.path, file]));
           this.store.last = snapshot.last;
         }
         if (this.store.key) { await this.store.persist(); await this.store.drain(); }
