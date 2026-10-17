@@ -227,10 +227,10 @@ async function createNote(name, content = '') {
   scheduleSync(15000);
   return p;
 }
-async function renameNote() {
+async function renameNote(name) {
   Auth.ensure();
   const n = notes.get(cur); if (!n) return;
-  const to = prompt('Rename note (use folder/name to move):', rel(n.path).replace(/\.md$/i, ''));
+  const to = name ?? prompt('Rename note (use folder/name to move):', rel(n.path).replace(/\.md$/i, ''));
   if (!to) return;
   const p = notePath(to);
   if (!p || p === n.path) return;
@@ -633,7 +633,20 @@ $('#change-save').onclick = async () => {
 
 /* ---------- toolbar / shortcuts ---------- */
 $('#new').onclick = () => { const n = prompt('New note name (use folder/name for folders):'); if (n) createNote(n); };
-$('#title').onclick = renameNote;
+{
+  // Click/tap the title to edit it in place; Enter or blur commits, Escape cancels.
+  const t = $('#title');
+  const show = () => { const n = notes.get(cur); t.textContent = n ? baseName(n.path) : ''; };
+  t.contentEditable = 'plaintext-only'; t.spellcheck = false;
+  t.onfocus = () => { const n = notes.get(cur); if (!n) return t.blur(); t.textContent = rel(n.path).replace(/\.md$/i, ''); getSelection().selectAllChildren(t); };
+  t.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); t.blur(); } else if (e.key === 'Escape') { t.dataset.cancel = '1'; t.blur(); } };
+  t.onblur = async () => {
+    const cancel = t.dataset.cancel; delete t.dataset.cancel;
+    const to = t.textContent.trim();
+    if (!cancel && to) { try { await renameNote(to); } catch (e) { console.error(e); } }
+    if (cur) show();
+  };
+}
 $('#del').onclick = deleteNote;
 $('#sync').onclick = sync;
 $('#switch').onclick = openSwitcher;
