@@ -310,9 +310,9 @@ function renderList() {
   }).join('') || '<div class="item" style="color:var(--mute)">No notes</div>';
   renderTags(tokens);
   const open = live().reduce((sum, n) => sum + tasksOf(n.content).filter(t => !t.done).length, 0);
-  $('#tasks').textContent = '☑ Tasks' + (open ? ` (${open})` : '');
+  $('#tasks-n').textContent = open; $('#tasks-n').hidden = !open;
   const inTrash = trashed().length;
-  $('#trash').textContent = '🗑 Trash' + (inTrash ? ` (${inTrash})` : '');
+  $('#trash-n').textContent = inTrash; $('#trash-n').hidden = !inTrash;
 }
 
 /* ---------- tags ---------- */
@@ -1352,7 +1352,7 @@ const App = {
     $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
-    versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash').textContent = '🗑 Trash'; $('#tasks').textContent = '☑ Tasks'; $('#tk-list').replaceChildren(); taskRows = [];
+    versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash-n').hidden = $('#tasks-n').hidden = true; $('#tk-list').replaceChildren(); taskRows = [];
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     for (const input of document.querySelectorAll('input[type=password]')) input.value = '';
     $('#status').textContent = 'Locked'; document.body.classList.remove('drawer');

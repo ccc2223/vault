@@ -927,14 +927,14 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
     await f.page.evaluate(() => { window.confirm = () => true; });
     await f.page.locator('#del').click();
     await f.page.waitForFunction(() => cur !== 'Secret draft.md'); await settled(f.page);
-    assert.equal(await f.page.locator('#trash').textContent(), '🗑 Trash (1)');
+    assert.equal(await f.page.locator('#trash-n').textContent(), '1');
     await f.page.locator('#trash').click();
     assert.match(await f.page.locator('#h-list').textContent(), /Secret draft.*Deleted/s);
     await f.page.waitForFunction(s => document.getElementById('h-view').textContent === s, secret);
     await f.page.locator('#h-restore').click();
     await f.page.waitForFunction(() => cur === 'Secret draft.md'); await settled(f.page);
     assert.equal(await editorText(f.page), secret);
-    assert.equal(await f.page.locator('#trash').textContent(), '🗑 Trash');
+    assert.equal(await f.page.locator('#trash-n').isHidden(), true);
     assert.equal((await versions()).length, 3, 'the restored note keeps its history');
     await f.page.evaluate(() => App.sync()); await settled(f.page);
     assert.equal(f.remote.get('Secret draft.md').content, secret);
@@ -1137,7 +1137,7 @@ test('the Tasks view collects open tasks across notes, ticks them in place and j
       await createNote('Work', '# Work\n- [ ] send report\n');
     });
     await settled(f.page);
-    assert.equal(await f.page.locator('#tasks').textContent(), '☑ Tasks (3)');
+    assert.equal(await f.page.locator('#tasks-n').textContent(), '3');
     await f.page.locator('#tasks').click();
     const rows = () => f.page.locator('#tk-list').evaluate(l => [...l.children].map(c => c.className === 'g' ? '> ' + c.textContent : (c.querySelector('input').checked ? '[x] ' : '[ ] ') + c.textContent));
     assert.deepEqual(await rows(), ['> Work', '[ ] send report', '> Shop', '[ ] milk', '[ ] nested eggs']);
@@ -1152,7 +1152,7 @@ test('the Tasks view collects open tasks across notes, ticks them in place and j
     await settled(f.page);
     assert.equal(await editorText(f.page), '# Work\n- [x] send report\n');
     assert.match(await f.page.evaluate(() => notes.get('Shop.md').content), /  1\. \[x\] nested eggs/);
-    assert.equal(await f.page.locator('#tasks').textContent(), '☑ Tasks (1)');
+    assert.equal(await f.page.locator('#tasks-n').textContent(), '1');
 
     // Clicking a task's text opens its note at that line.
     await f.page.locator('#tk-list label', { hasText: 'milk' }).locator('span').click();
