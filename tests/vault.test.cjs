@@ -992,3 +992,48 @@ test('#tags highlight in the editor, list with counts in the sidebar, search exa
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test("today's note opens or is created from the Daily template; templates fill in new notes and the cursor", async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    const day = await f.page.evaluate(() => formatDate(new Date(), 'YYYY-MM-DD'));
+    await f.page.locator('#today').click();
+    await f.page.waitForFunction(d => cur === 'Daily/' + d + '.md', day);
+    assert.equal(await editorText(f.page), `# ${day}\n\n`);
+    await f.page.evaluate(() => openNote('Secret draft.md'));
+    await f.page.keyboard.press('Alt+d');
+    await f.page.waitForFunction(d => cur === 'Daily/' + d + '.md', day);
+    assert.equal(await f.page.evaluate(() => live().filter(n => n.path.startsWith('Daily/')).length), 1, 'opens the same note again');
+
+    // With Templates/Daily, a new day's note uses it.
+    await f.page.evaluate(async () => {
+      await createNote('Templates/Daily', '# {{title}}\n{{date:dddd}} at {{time}}\n\n## Tasks\n');
+      await createNote('Templates/Meeting', '# {{title}}\nDate: {{date}}\n');
+      window.confirm = () => true; await openNote('Daily/' + formatDate(new Date(), 'YYYY-MM-DD') + '.md'); await deleteNote();
+    });
+    await f.page.locator('#today').click();
+    await f.page.waitForFunction(d => cur === 'Daily/' + d + '.md', day);
+    const weekday = await f.page.evaluate(() => formatDate(new Date(), 'dddd'));
+    assert.match(await editorText(f.page), new RegExp(`^# ${day}\\n${weekday} at \\d\\d:\\d\\d\\n\\n## Tasks\\n$`));
+
+    // New note from template, and insert template at the cursor, from the command palette.
+    await f.page.keyboard.press('ControlOrMeta+p');
+    await f.page.keyboard.type('new note from template');
+    await f.page.keyboard.press('Enter');
+    assert.deepEqual(await f.page.locator('#cmd-list div[data-i]').allTextContents(), ['Daily', 'Meeting']);
+    await f.page.keyboard.type('meet');
+    await f.page.keyboard.press('Enter');
+    await f.page.waitForFunction(() => / note \d+\.md$/.test(cur));
+    const title = await f.page.evaluate(() => baseName(cur));
+    assert.equal(await editorText(f.page), `# ${title}\nDate: ${day}\n`);
+    await f.page.keyboard.press('Escape');
+    await f.page.evaluate(() => editor.focus(true));
+    await f.page.keyboard.press('ControlOrMeta+p');
+    await f.page.keyboard.type('insert template');
+    await f.page.keyboard.press('Enter');
+    await f.page.locator('#cmd-list div[data-i]', { hasText: 'Meeting' }).click();
+    await f.page.waitForFunction(t => editor.text.endsWith(`Date: ${t}\n`) && editor.text.split('Date:').length === 3, day);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});

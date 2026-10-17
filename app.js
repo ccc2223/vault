@@ -724,35 +724,87 @@ $('#qs-in').addEventListener('keydown', e => {
 $('#qs-list').addEventListener('click', e => { const d = e.target.closest('div[data-i]'); if (d) qsGo(+d.dataset.i); });
 $('#dlg-qs').addEventListener('click', e => { if (e.target === $('#dlg-qs')) $('#dlg-qs').close(); });
 
+/* ---------- daily notes and templates ---------- */
+// Today's note is Daily/YYYY-MM-DD in the current space, made from Templates/Daily if that note exists.
+// Templates are the notes in Templates/; {{title}}, {{date}}, {{time}} and {{date:YYYY-MM-DD HH:mm}} fill in.
+const DAILY = 'Daily', TEMPLATES = 'Templates';
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function formatDate(d, format) {
+  const pad = x => String(x).padStart(2, '0');
+  const parts = { YYYY: d.getFullYear(), YY: pad(d.getFullYear() % 100), MMMM: MONTHS[d.getMonth()], MMM: MONTHS[d.getMonth()].slice(0, 3),
+    MM: pad(d.getMonth() + 1), M: d.getMonth() + 1, DD: pad(d.getDate()), D: d.getDate(), dddd: DAYS[d.getDay()], ddd: DAYS[d.getDay()].slice(0, 3),
+    HH: pad(d.getHours()), H: d.getHours(), mm: pad(d.getMinutes()), ss: pad(d.getSeconds()) };
+  return format.replace(/YYYY|YY|MMMM|MMM|MM|M|DD|D|dddd|ddd|HH|H|mm|ss/g, t => parts[t]);
+}
+function fillTemplate(text, title, d = new Date()) {
+  return text.replace(/\{\{\s*(title|date|time)(?::([^}]*))?\s*\}\}/gi, (m, key, format) => {
+    key = key.toLowerCase();
+    if (key === 'title') return title;
+    return formatDate(d, format?.trim() || (key === 'date' ? 'YYYY-MM-DD' : 'HH:mm'));
+  });
+}
+const templates = () => live().filter(n => rel(n.path).toLowerCase().startsWith(TEMPLATES.toLowerCase() + '/')).sort((a, b) => rel(a.path).localeCompare(rel(b.path)));
+async function openToday() {
+  Auth.ensure();
+  const d = new Date(), day = formatDate(d, 'YYYY-MM-DD'), p = resolve(DAILY + '/' + day);
+  if (p && rel(p).toLowerCase() === (DAILY + '/' + day + '.md').toLowerCase()) { await openNote(p); return; }
+  const template = notes.get(resolve(TEMPLATES + '/Daily') || '');
+  const fromTemplate = template && rel(template.path).toLowerCase() === (TEMPLATES + '/daily.md').toLowerCase();
+  await createNote(DAILY + '/' + day, fromTemplate ? fillTemplate(template.content, day, d) || '\n' : `# ${day}\n\n`);
+}
+// A placeholder name for a new note (e.g. "31.07.26 note 1"), to type over in the title.
+function untitled() {
+  const day = formatDate(new Date(), 'DD.MM.YY');
+  let i = 1;
+  while ([...notes.values()].some(n => !n.deleted && n.path.toLowerCase() === notePath(`${day} note ${i}`)?.toLowerCase())) i++;
+  return `${day} note ${i}`;
+}
+function pickTemplate(use) {
+  openCommands(templates().map(n => ({ name: rel(n.path).slice(TEMPLATES.length + 1).replace(/\.md$/i, ''), run: () => use(n) })),
+    'Pick a template…', `No templates yet. Notes in the ${TEMPLATES} folder appear here.`);
+}
+const newFromTemplate = () => pickTemplate(async t => {
+  const name = untitled();
+  if (await createNote(name, fillTemplate(t.content, name) || '\n')) $('#title').focus();
+});
+const insertTemplate = () => pickTemplate(t => {
+  const n = notes.get(cur); if (!n) return;
+  editor.focus(); editor.insert(fillTemplate(t.content, baseName(n.path)));
+});
+
 /* ---------- command palette ---------- */
 // Ctrl/Cmd+P lists every action. Features add theirs with command(name, run, keys); when shows it only where it applies.
 const commands = [];
 const command = (name, run, keys = '', when = () => true) => commands.push({ name, run, keys, when });
 const MOD = /Mac|iPhone|iPad/.test(navigator.platform) ? 'Cmd' : 'Ctrl';
-let cmdSel = 0, cmdRes = [];
+let cmdSel = 0, cmdRes = [], cmdItems = null;  // cmdItems: a list to pick from instead of the commands
 function recentCommands() { try { return JSON.parse(localStorage.getItem('vault.commands') || '[]'); } catch { return []; } }
 function drawCmd() {
   const q = $('#cmd-in').value.trim().toLowerCase(), recent = recentCommands();
   const rank = c => { const i = recent.indexOf(c.name); return i < 0 ? recent.length : i; };
-  const all = commands.filter(c => c.when());
+  const all = cmdItems || commands.filter(c => c.when());
   cmdRes = q ? all.map(c => ({ c, s: fuzzy(c.name, q) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s || rank(a.c) - rank(b.c)).map(x => x.c)
     : all.sort((a, b) => rank(a) - rank(b));
   cmdSel = Math.max(0, Math.min(cmdSel, cmdRes.length - 1));
   $('#cmd-list').innerHTML = cmdRes.map((c, i) => `<div class="${i === cmdSel ? 'sel' : ''}" data-i="${i}">${esc(c.name)}` +
-    (c.keys ? `<kbd>${esc(c.keys.replace('Mod', MOD))}</kbd>` : '') + '</div>').join('') || '<div class="none">No matching commands</div>';
+    (c.keys ? `<kbd>${esc(c.keys.replace('Mod', MOD))}</kbd>` : '') + '</div>').join('') ||
+    `<div class="none">${cmdItems ? cmdEmpty : 'No matching commands'}</div>`;
   $('#cmd-list .sel')?.scrollIntoView({ block: 'nearest' });
 }
 async function cmdGo(i) {
   const c = cmdRes[i]; if (!c) return;
   $('#dlg-cmd').close();
-  try { localStorage.setItem('vault.commands', JSON.stringify([c.name, ...recentCommands().filter(n => n !== c.name)].slice(0, 20))); } catch {}
+  if (!cmdItems) try { localStorage.setItem('vault.commands', JSON.stringify([c.name, ...recentCommands().filter(n => n !== c.name)].slice(0, 20))); } catch {}
   try { await c.run(); } catch (error) { if (Auth.active) setStatus(error.message, true); }
 }
-function openCommands() {
+let cmdEmpty = '';
+// Without items it lists the commands; with items [{name, run}] it picks one of them (templates, for instance).
+function openCommands(items = null, hint = 'Type a command…', empty = '') {
   Auth.ensure();
-  if ($('#dlg-cmd').open) return;
   for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
-  $('#cmd-in').value = ''; cmdSel = 0; drawCmd(); $('#dlg-cmd').showModal(); $('#cmd-in').focus();
+  cmdItems = items; cmdEmpty = empty;
+  $('#cmd-in').value = ''; $('#cmd-in').placeholder = hint; cmdSel = 0; drawCmd(); $('#dlg-cmd').showModal(); $('#cmd-in').focus();
 }
 $('#cmd-in').addEventListener('input', () => { cmdSel = 0; drawCmd(); });
 $('#cmd-in').addEventListener('keydown', e => {
@@ -1071,14 +1123,9 @@ $('#change-save').onclick = async () => {
 };
 
 /* ---------- toolbar / shortcuts ---------- */
-// New note: create it with a placeholder name (e.g. "31.07.26 note 1") and put the cursor in the title to type over it.
-$('#new').onclick = async () => {
-  const d = new Date(), pad = x => String(x).padStart(2, '0');
-  const day = `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${pad(d.getFullYear() % 100)}`;
-  let i = 1;
-  while ([...notes.values()].some(n => !n.deleted && n.path.toLowerCase() === notePath(`${day} note ${i}`)?.toLowerCase())) i++;
-  if (await createNote(`${day} note ${i}`)) $('#title').focus();
-};
+// New note: create it with a placeholder name and put the cursor in the title to type over it.
+$('#new').onclick = async () => { if (await createNote(untitled())) $('#title').focus(); };
+$('#today').onclick = () => openToday();
 {
   // Click/tap the title to edit it in place; Enter or blur commits, Escape cancels.
   const t = $('#title');
@@ -1094,10 +1141,13 @@ $('#new').onclick = async () => {
   };
 }
 $('#del').onclick = deleteNote;
-$('#cmd').onclick = openCommands;
+$('#cmd').onclick = () => openCommands();
 {
   const hasNote = () => !!cur, today = () => new Date().toLocaleDateString('en-CA');
   command('New note', () => $('#new').click(), 'Alt+N');
+  command("Open today's note", openToday, 'Alt+D');
+  command('New note from template…', newFromTemplate);
+  command('Insert template…', insertTemplate, '', hasNote);
   command('Open note…', openSwitcher, 'Mod+O');
   command('Search notes', () => { document.body.classList.add('drawer'); $('#q').focus(); }, 'Mod+Shift+F');
   command('Switch space…', openSpaces, 'Mod+Shift+O');
@@ -1128,13 +1178,14 @@ document.addEventListener('keydown', e => {
   if (!Auth.active) return;
   Auth.ensure();
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); openCommands(); }
+  if (mod && !e.shiftKey && e.key.toLowerCase() === 'p') { e.preventDefault(); if (!$('#dlg-cmd').open) openCommands(); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openSpaces(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); sync(); }
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); document.body.classList.add('drawer'); $('#q').focus(); }
   else if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setSource(!editor.source); }
-  else if (e.altKey && e.key.toLowerCase() === 'n') { e.preventDefault(); $('#new').click(); }
+  else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); $('#new').click(); }
+  else if (e.altKey && e.code === 'KeyD') { e.preventDefault(); openToday(); }
 });
 window.addEventListener('beforeunload', e => {
   if (Auth.store.pending || (Auth.active && saveT)) { e.preventDefault(); e.returnValue = ''; }
@@ -1155,6 +1206,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - Type \`[[\` to autocomplete note names
 - Markdown symbols only show where you're editing; **Ctrl/Cmd+E** shows the whole source
 - Backlinks appear under the editor
+- **Alt+D** or 📅 opens today's note in \`Daily/\`; notes in \`Templates/\` become templates
 - **Ctrl/Cmd+P** every command · **Ctrl/Cmd+O** quick switcher · **Ctrl/Cmd+S** sync · **Alt+N** new note
 - Use \`folder/name\` when creating a note to put it in a folder
 - Add #tags anywhere; click one, or pick it under Tags in the sidebar, to see every note with it
