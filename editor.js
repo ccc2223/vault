@@ -1,13 +1,14 @@
 'use strict';
 // Obsidian-style live preview on CodeMirror 6 (vendor/codemirror.min.js exposes it as CM).
 // Notes stay plain Markdown, and the syntax is hidden everywhere (revealing it under the cursor is behind the revealSyntax flag) so the note looks
-// rendered: headings, emphasis, links, images, task boxes, quotes, code and tables. Ctrl/Cmd+E shows the source.
+// rendered: headings, emphasis, links, images, task boxes, quotes, code and tables. Tables are edited cell by cell and code
+// blocks are highlighted by language with a copy button, as in Obsidian. Ctrl/Cmd+E shows the source.
 const LiveEditor = (() => {
   const {
     EditorView, Decoration, WidgetType, keymap, placeholder, EditorState, EditorSelection, StateField, StateEffect,
-    Annotation, Compartment, Prec, Transaction, Language, syntaxTree, ensureSyntaxTree, indentUnit, HighlightStyle,
+    Annotation, Compartment, Prec, Transaction, Language, StreamLanguage, syntaxTree, ensureSyntaxTree, indentUnit, HighlightStyle,
     syntaxHighlighting, commonmarkLanguage, insertNewlineContinueMarkup, deleteMarkupBackward, history,
-    historyKeymap, defaultKeymap, indentMore, indentLess, GFM, tags
+    historyKeymap, defaultKeymap, indentMore, indentLess, undo, redo, GFM, parseCode, tags, codeModes
   } = CM;
 
   // [[Note]], [[Note#Heading|alias]] and ![[image.png|300]], matching the app's marked extensions.
@@ -23,8 +24,26 @@ const LiveEditor = (() => {
       }
     }]
   };
+  // Code blocks are parsed in the language named after the fence: ```js, ```python, ```bash and so on.
+  const ALIASES = {
+    js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', node: 'javascript', ts: 'typescript',
+    tsx: 'typescript', jsonc: 'json', json5: 'json', py: 'python', python3: 'python', sh: 'shell', bash: 'shell', zsh: 'shell',
+    console: 'shell', shellscript: 'shell', htm: 'html', svg: 'xml', yml: 'yaml', 'c++': 'cpp', cc: 'cpp', hpp: 'cpp', h: 'c',
+    cs: 'csharp', 'c#': 'csharp', kt: 'kotlin', objc: 'objectivec', 'objective-c': 'objectivec', golang: 'go', rs: 'rust',
+    rb: 'ruby', patch: 'diff', ps1: 'powershell', pwsh: 'powershell', docker: 'dockerfile', postgres: 'sql', mysql: 'sql', sqlite: 'sql'
+  };
+  const codeLangs = new Map();
+  function codeLanguage(info) {
+    let name = info.trim().split(/\s+/)[0].toLowerCase();
+    if (!Object.hasOwn(codeModes, name)) name = Object.hasOwn(ALIASES, name) ? ALIASES[name] : null;
+    if (!name) return null;
+    if (!codeLangs.has(name)) codeLangs.set(name, StreamLanguage.define(codeModes[name]));
+    return codeLangs.get(name);
+  }
   // GFM like the preview (tables, task lists, strikethrough, bare URLs), keeping lang-markdown's list commands.
-  const language = new Language(commonmarkLanguage.data, commonmarkLanguage.parser.configure([GFM, WikiLinks]), [], 'markdown');
+  const language = new Language(commonmarkLanguage.data, commonmarkLanguage.parser.configure([
+    GFM, WikiLinks, parseCode({ codeParser: info => codeLanguage(info)?.parser || null })
+  ]), [], 'markdown');
   const styles = syntaxHighlighting(HighlightStyle.define([
     { tag: tags.processingInstruction, class: 'cm-md-mark' },
     { tag: tags.emphasis, class: 'cm-md-em' },
@@ -32,6 +51,18 @@ const LiveEditor = (() => {
     { tag: tags.strikethrough, class: 'cm-md-strike' },
     { tag: tags.monospace, class: 'cm-md-code' },
     { tag: tags.url, class: 'cm-md-url' }
+  ]));
+  // Code colours; the classes are only styled inside code blocks.
+  const codeStyles = syntaxHighlighting(HighlightStyle.define([
+    { tag: [tags.keyword, tags.controlKeyword, tags.operatorKeyword, tags.modifier, tags.definitionKeyword, tags.moduleKeyword], class: 'hl-keyword' },
+    { tag: [tags.string, tags.special(tags.string), tags.regexp, tags.inserted, tags.character], class: 'hl-string' },
+    { tag: [tags.comment, tags.lineComment, tags.blockComment], class: 'hl-comment' },
+    { tag: [tags.number, tags.bool, tags.atom, tags.null, tags.literal], class: 'hl-number' },
+    { tag: [tags.function(tags.variableName), tags.definition(tags.variableName), tags.macroName], class: 'hl-def' },
+    { tag: [tags.typeName, tags.className, tags.tagName, tags.namespace, tags.standard(tags.variableName)], class: 'hl-type' },
+    { tag: [tags.propertyName, tags.attributeName], class: 'hl-prop' },
+    { tag: [tags.deleted, tags.invalid], class: 'hl-deleted' },
+    { tag: [tags.meta, tags.heading], class: 'hl-meta' }
   ]));
 
   const external = Annotation.define();     // text set by the app (sync pulls), not typed
@@ -74,6 +105,42 @@ const LiveEditor = (() => {
     return null;
   };
 
+  // GFM tables as rows of raw cell Markdown. The first row is the header; aligns come from the delimiter row.
+  function splitRow(line) {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+    const cells = [];
+    let cell = '';
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '\\' && s[i + 1] === '|') { cell += '\\|'; i++; }
+      else if (s[i] === '|') { cells.push(cell.trim()); cell = ''; }
+      else cell += s[i];
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+  function parseTable(src) {
+    const lines = src.split('\n'), rows = [splitRow(lines[0]), ...lines.slice(2).map(splitRow)];
+    // Extra cells are kept as columns rather than dropped, so editing never loses text.
+    const cols = Math.max(...rows.map(r => r.length));
+    const aligns = splitRow(lines[1] || '').map(d => /^:-*:$/.test(d) ? 'center' : /^:/.test(d) ? 'left' : /:$/.test(d) ? 'right' : '');
+    return { rows: rows.map(r => Array.from({ length: cols }, (_, i) => r[i] || '')), aligns: Array.from({ length: cols }, (_, i) => aligns[i] || '') };
+  }
+  // Padded like Obsidian writes them, so the source stays readable.
+  function tableSource({ rows, aligns }) {
+    const widths = aligns.map((_, c) => Math.max(3, ...rows.map(r => r[c].length)));
+    const line = cells => '| ' + cells.join(' | ') + ' |';
+    const rule = aligns.map((a, c) => {
+      const w = widths[c];
+      return a === 'center' ? ':' + '-'.repeat(w - 2) + ':' : a === 'left' ? ':' + '-'.repeat(w - 1) : a === 'right' ? '-'.repeat(w - 1) + ':' : '-'.repeat(w);
+    });
+    const pad = r => r.map((cell, c) => cell.padEnd(widths[c]));
+    return [line(pad(rows[0])), line(rule), ...rows.slice(1).map(r => line(pad(r)))].join('\n');
+  }
+  // What a typed cell becomes in the source: one line, with any pipe escaped.
+  const cellSource = text => text.replace(/\s*\n\s*/g, ' ').replace(/(^|[^\\])\|/g, '$1\\|').replace(/(^|[^\\])\|/g, '$1\\|').trim();
+
   function create(parent, hooks) {
     /* ---------- widgets ---------- */
     const missing = name => Object.assign(document.createElement('span'), { className: 'att missing', title: 'Image not found', textContent: name });
@@ -107,11 +174,248 @@ const LiveEditor = (() => {
         return wrap;
       }
     }
+    // A table is edited cell by cell, like Obsidian: a focused cell shows its Markdown, the others show it rendered.
+    // Each edit rewrites the table's source; the widget keeps its DOM (and the caret) when the new source is its own.
     class TableWidget extends WidgetType {
       constructor(src) { super(); this.src = src; }
       eq(o) { return o.src === this.src; }
-      ignoreEvent() { return false; }
-      toDOM() { const div = document.createElement('div'); div.className = 'cm-table cm-reveal'; hooks.renderInto(div, this.src); return div; }
+      updateDOM(dom) { return dom.table?.src === this.src; }
+      ignoreEvent() { return true; }
+      toDOM(view) { return tableDOM(view, this.src); }
+    }
+    const CELL_EDIT = (() => { const d = document.createElement('div'); d.contentEditable = 'plaintext-only'; return d.contentEditable === 'plaintext-only' ? 'plaintext-only' : 'true'; })();
+    function tableDOM(view, src) {
+      const wrap = document.createElement('div'), model = parseTable(src);
+      wrap.className = 'cm-table';
+      wrap.table = { src, model };
+      const grid = document.createElement('table');
+      model.rows.forEach((row, r) => {
+        const tr = document.createElement('tr');
+        row.forEach((md, c) => {
+          const cell = document.createElement(r ? 'td' : 'th');
+          Object.assign(cell.dataset, { r, c });
+          cell.contentEditable = CELL_EDIT;
+          cell.spellcheck = false;
+          if (model.aligns[c]) cell.style.textAlign = model.aligns[c];
+          showCell(cell, md);
+          tr.append(cell);
+        });
+        (r ? (grid.tBodies[0] || grid.createTBody()) : grid.createTHead()).append(tr);
+      });
+      const add = (cls, title, run) => {
+        const b = Object.assign(document.createElement('button'), { className: 'cm-table-add ' + cls, type: 'button', title, textContent: '+' });
+        b.tabIndex = -1; b.contentEditable = 'false';
+        b.addEventListener('mousedown', e => e.preventDefault());
+        b.addEventListener('click', run);
+        return b;
+      };
+      const box = document.createElement('div');
+      box.className = 'cm-table-box';
+      box.append(grid,
+        add('cm-table-add-col', 'Add column', () => edit(view, wrap, m => { insertColumn(m, m.aligns.length); return [0, m.aligns.length - 1]; })),
+        add('cm-table-add-row', 'Add row', () => edit(view, wrap, m => { insertRow(m, m.rows.length); return [m.rows.length - 1, 0]; })));
+      wrap.append(box);
+      wrap.addEventListener('focusin', e => { const cell = e.target.closest('[data-r]'); if (cell) startCell(wrap, cell); });
+      wrap.addEventListener('focusout', e => { const cell = e.target.closest('[data-r]'); if (cell) showCell(cell, cellText(wrap, cell)); });
+      wrap.addEventListener('mousedown', e => cellMouse(view, wrap, e));
+      wrap.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); });
+      wrap.addEventListener('input', e => { const cell = e.target.closest('[data-r]'); if (cell) commit(view, wrap, cell); });
+      wrap.addEventListener('keydown', e => cellKey(view, wrap, e));
+      wrap.addEventListener('contextmenu', e => { const cell = e.target.closest('[data-r]'); if (cell) { e.preventDefault(); tableMenu(view, wrap, cell, e); } });
+      return wrap;
+    }
+    const cellAt = (wrap, r, c) => wrap.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+    const cellText = (wrap, cell) => wrap.table.model.rows[cell.dataset.r][cell.dataset.c];
+    // Rendered: inline Markdown, so links, emphasis, code and images show as they do elsewhere in the note.
+    function showCell(cell, md) {
+      delete cell.dataset.editing;
+      if (md) hooks.renderInline(cell, md.replace(/\\\|/g, '|')); else cell.textContent = '';
+    }
+    function startCell(wrap, cell, at) {
+      if (cell.dataset.editing) return;
+      const shown = cell.textContent, md = cellText(wrap, cell);
+      cell.dataset.editing = '1';
+      cell.textContent = md;
+      // Keep the caret where it was clicked when the cell has no hidden Markdown, else put it at the end.
+      caret(cell, at != null && shown === md ? at : md.length);
+      return at != null && shown === md ? at : md.length;
+    }
+    function caret(cell, at) {
+      const t = cell.firstChild, range = document.createRange();
+      if (t) range.setStart(t, Math.min(at, t.length)); else range.setStart(cell, 0);
+      range.collapse(true);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    }
+    function caretOffset(cell) {
+      const sel = getSelection();
+      if (!sel.rangeCount || !cell.contains(sel.anchorNode)) return null;
+      const r = sel.getRangeAt(0).cloneRange(); r.selectNodeContents(cell); r.setEnd(sel.anchorNode, sel.anchorOffset);
+      return r.toString().length;
+    }
+    // Where the table's source is now; null if it changed under the widget (then the widget is redrawn anyway).
+    function tableRange(view, wrap) {
+      let from;
+      try { from = view.posAtDOM(wrap); } catch { return null; }
+      const to = from + wrap.table.src.length;
+      return view.state.sliceDoc(from, to) === wrap.table.src ? { from, to } : null;
+    }
+    function commit(view, wrap, cell) {
+      const at = tableRange(view, wrap); if (!at) return;
+      wrap.table.model.rows[cell.dataset.r][cell.dataset.c] = cellSource(cell.textContent);
+      const next = tableSource(wrap.table.model);
+      if (next === wrap.table.src) return;
+      wrap.table.src = next;
+      view.dispatch({ changes: { from: at.from, to: at.to, insert: next }, userEvent: 'input' });
+      view.requestMeasure();
+    }
+    // Structural edits redraw the table, then focus the cell that change returns as [row, column].
+    function edit(view, wrap, change) {
+      const at = tableRange(view, wrap); if (!at) return;
+      const model = { rows: wrap.table.model.rows.map(r => [...r]), aligns: [...wrap.table.model.aligns] };
+      const focus = change(model);
+      const next = model.rows.length ? tableSource(model) : '';
+      view.dispatch({ changes: { from: at.from, to: at.to, insert: next }, userEvent: next ? 'input' : 'delete' });
+      if (!next) { view.focus(); view.dispatch({ selection: { anchor: at.from } }); return; }
+      if (focus) focusCell(view, at.from, ...focus);
+    }
+    function focusCell(view, from, r, c, at) {
+      for (const w of view.contentDOM.querySelectorAll('.cm-table')) {
+        let pos; try { pos = view.posAtDOM(w); } catch { continue; }
+        if (pos !== from) continue;
+        const rows = w.table.model.rows;
+        const cell = cellAt(w, Math.max(0, Math.min(r, rows.length - 1)), Math.max(0, Math.min(c, rows[0].length - 1)));
+        cell.focus();
+        if (at != null) caret(cell, at === 'end' ? cell.textContent.length : at);
+        return;
+      }
+    }
+    const insertRow = (m, at) => m.rows.splice(Math.max(1, at), 0, m.aligns.map(() => ''));
+    const insertColumn = (m, at) => { m.rows.forEach(r => r.splice(at, 0, '')); m.aligns.splice(at, 0, ''); };
+    function leave(view, wrap, after) {
+      const at = tableRange(view, wrap); if (!at) return;
+      view.focus();
+      if (!after) { view.dispatch({ selection: { anchor: Math.max(0, at.from - 1) }, scrollIntoView: true }); return; }
+      // A table at the very end of the note gets an empty line after it to type on.
+      if (at.to >= view.state.doc.length) view.dispatch({ changes: { from: at.to, insert: '\n' } });
+      view.dispatch({ selection: { anchor: at.to + 1 }, scrollIntoView: true });
+    }
+    function cellMouse(view, wrap, e) {
+      if (e.button !== 0) return;
+      const cell = e.target.closest('[data-r]');
+      if (!cell || cell.dataset.editing) return;
+      // Links in a rendered cell open on click; elsewhere the click starts editing that cell.
+      const a = e.target.closest('.wikilink[data-target], .wikilink[data-att], a[href]');
+      if (a && !e.shiftKey) {
+        e.preventDefault();
+        if (a.dataset.target || a.dataset.att) follow(a);
+        else if (/^(https?:|mailto:)/i.test(a.getAttribute('href'))) window.open(a.href, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      const p = document.caretPositionFromPoint?.(e.clientX, e.clientY), rng = !p && document.caretRangeFromPoint?.(e.clientX, e.clientY);
+      const node = p ? p.offsetNode : rng?.startContainer, off = p ? p.offset : rng?.startOffset;
+      let at = null;
+      if (node && cell.contains(node)) { const r = document.createRange(); r.selectNodeContents(cell); r.setEnd(node, off); at = r.toString().length; }
+      e.preventDefault();
+      at = startCell(wrap, cell, at);
+      cell.focus({ preventScroll: true });
+      caret(cell, at);
+    }
+    function cellKey(view, wrap, e) {
+      const cell = e.target.closest('[data-r]'); if (!cell || e.isComposing) return;
+      const r = +cell.dataset.r, c = +cell.dataset.c, rows = wrap.table.model.rows, last = rows.length - 1, cols = rows[0].length;
+      const from = tableRange(view, wrap)?.from, mod = e.ctrlKey || e.metaKey, key = e.key;
+      const go = (r2, c2, at) => { e.preventDefault(); focusCell(view, from, r2, c2, at); };
+      if (mod && key.toLowerCase() === 'z' || mod && key.toLowerCase() === 'y') {
+        // Undo works on the note, then puts the caret back in the same cell.
+        e.preventDefault();
+        (key.toLowerCase() === 'y' || e.shiftKey ? redo : undo)(view);
+        if (from != null) focusCell(view, from, r, c, 'end');
+      }
+      else if (key === 'Tab' && !e.shiftKey) {
+        if (c < cols - 1) go(r, c + 1, 'end');
+        else if (r < last) go(r + 1, 0, 'end');
+        else { e.preventDefault(); edit(view, wrap, m => { insertRow(m, m.rows.length); return [m.rows.length - 1, 0]; }); }
+      }
+      else if (key === 'Tab') { if (c > 0) go(r, c - 1, 'end'); else if (r > 0) go(r - 1, cols - 1, 'end'); else e.preventDefault(); }
+      else if (key === 'Enter' && !mod) {
+        // Enter moves down a row, adding one at the bottom, like Obsidian.
+        if (r < last) go(r + 1, c, 'end');
+        else { e.preventDefault(); edit(view, wrap, m => { insertRow(m, m.rows.length); return [m.rows.length - 1, c]; }); }
+      }
+      else if (key === 'Enter') { e.preventDefault(); leave(view, wrap, true); }
+      else if (key === 'Escape') { e.preventDefault(); leave(view, wrap, true); }
+      else if (key === 'ArrowUp' && !e.shiftKey) { if (r > 0) go(r - 1, c, 'end'); else { e.preventDefault(); leave(view, wrap, false); } }
+      else if (key === 'ArrowDown' && !e.shiftKey) { if (r < last) go(r + 1, c, 'end'); else { e.preventDefault(); leave(view, wrap, true); } }
+      else if (key === 'ArrowLeft' && !e.shiftKey && getSelection().isCollapsed && caretOffset(cell) === 0 && (c > 0 || r > 0)) go(c > 0 ? r : r - 1, c > 0 ? c - 1 : cols - 1, 'end');
+      else if (key === 'ArrowRight' && !e.shiftKey && getSelection().isCollapsed && caretOffset(cell) === cell.textContent.length && (c < cols - 1 || r < last)) go(c < cols - 1 ? r : r + 1, c < cols - 1 ? c + 1 : 0, 0);
+    }
+    // Right-click (or long-press) a cell for row, column and alignment actions.
+    function tableMenu(view, wrap, cell, e) {
+      document.querySelector('.cm-table-menu')?.remove();
+      const r = +cell.dataset.r, c = +cell.dataset.c, rows = wrap.table.model.rows;
+      const items = [
+        ['Add row above', r > 0, m => { insertRow(m, r); return [r, c]; }],
+        ['Add row below', true, m => { insertRow(m, r + 1); return [r + 1, c]; }],
+        ['Add column left', true, m => { insertColumn(m, c); return [r, c]; }],
+        ['Add column right', true, m => { insertColumn(m, c + 1); return [r, c + 1]; }],
+        null,
+        ['Align left', true, m => { m.aligns[c] = 'left'; return [r, c]; }],
+        ['Align center', true, m => { m.aligns[c] = 'center'; return [r, c]; }],
+        ['Align right', true, m => { m.aligns[c] = 'right'; return [r, c]; }],
+        null,
+        ['Delete row', r > 0, m => { m.rows.splice(r, 1); return [r, c]; }],
+        ['Delete column', rows[0].length > 1, m => { m.rows.forEach(row => row.splice(c, 1)); m.aligns.splice(c, 1); return [r, c]; }],
+        ['Delete table', true, m => { m.rows = []; return null; }]
+      ];
+      const menu = document.createElement('div');
+      menu.className = 'cm-table-menu';
+      menu.setAttribute('role', 'menu');
+      for (const item of items) {
+        if (!item) { menu.append(document.createElement('hr')); continue; }
+        const [label, ok, change] = item;
+        const b = Object.assign(document.createElement('button'), { type: 'button', textContent: label, disabled: !ok });
+        b.setAttribute('role', 'menuitem');
+        b.addEventListener('mousedown', ev => ev.preventDefault());
+        b.addEventListener('click', () => { close(); edit(view, wrap, change); });
+        menu.append(b);
+      }
+      const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', esc, true); };
+      const outside = ev => { if (!menu.contains(ev.target)) close(); };
+      const esc = ev => { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } };
+      document.addEventListener('pointerdown', outside, true);
+      document.addEventListener('keydown', esc, true);
+      document.body.append(menu);
+      const w = menu.offsetWidth, h = menu.offsetHeight;
+      menu.style.left = Math.max(4, Math.min(e.clientX, innerWidth - w - 4)) + 'px';
+      menu.style.top = Math.max(4, Math.min(e.clientY, innerHeight - h - 4)) + 'px';
+    }
+    // The copy button on a code block's first line copies the code between its fences.
+    class CopyWidget extends WidgetType {
+      eq() { return true; }
+      ignoreEvent() { return true; }
+      toDOM(view) {
+        const b = Object.assign(document.createElement('button'), { type: 'button', className: 'cm-code-copy', textContent: 'Copy', title: 'Copy code' });
+        b.tabIndex = -1;
+        b.addEventListener('mousedown', e => e.preventDefault());
+        b.addEventListener('click', async () => {
+          const code = codeAt(view.state, view.posAtDOM(b));
+          if (code == null) return;
+          try { await navigator.clipboard.writeText(code); b.textContent = 'Copied'; }
+          catch { b.textContent = 'Copy failed'; }
+          setTimeout(() => { b.textContent = 'Copy'; }, 1500);
+        });
+        return b;
+      }
+    }
+    const copy = new CopyWidget();
+    function codeAt(state, pos) {
+      let node = syntaxTree(state).resolveInner(pos, -1);
+      while (node && node.name !== 'FencedCode') node = node.parent;
+      if (!node) return null;
+      const doc = state.doc, first = doc.lineAt(node.from), marks = [];
+      for (let c = node.firstChild; c; c = c.nextSibling) if (c.name === 'CodeMark') marks.push(c);
+      const end = marks.length > 1 ? doc.lineAt(marks[marks.length - 1].from).from - 1 : node.to;
+      return first.to + 1 > end ? '' : doc.sliceString(first.to + 1, end);
     }
     class Simple extends WidgetType {
       constructor(make, key) { super(); this.make = make; this.key = key; }
@@ -192,9 +496,17 @@ const LiveEditor = (() => {
           else if (name === 'FencedCode' || name === 'CodeBlock') {
             lines(node.from, node.to, 'cm-codeblock');
             line(node.from, 'cm-codeblock-begin'); line(node.to, 'cm-codeblock-end');
-            if (name === 'FencedCode' && !touches(node.from, node.to)) {
-              for (const m of kids(node, 'CodeMark')) hide(m.from, m.to);
+            if (name === 'FencedCode') {
+              // The opening fence line becomes the block's header: its language as a label, and a copy button.
+              // The language stays real text, so it can still be edited there.
+              const marks = kids(node, 'CodeMark');
+              if (!touches(node.from, node.to)) {
+                for (const m of marks) hide(m.from, m.to);
+                line(node.from, 'cm-code-head');
+                if (marks.length > 1 && doc.lineAt(marks[marks.length - 1].from).from > node.from) line(marks[marks.length - 1].from, 'cm-code-foot');
+              }
               for (const m of kids(node, 'CodeInfo')) mark(m.from, m.to, 'cm-code-info');
+              after(doc.lineAt(node.from).to, copy);
             }
             return false;
           }
@@ -313,11 +625,9 @@ const LiveEditor = (() => {
         const t = e.target instanceof Element ? e.target : null; if (!t) return false;
         const task = t.closest('.cm-task');
         if (task) { e.preventDefault(); toggleTask(view, view.posAtDOM(task)); return true; }
-        // Rendered links open on click, like Obsidian; inside a rendered table too. Web links open natively.
+        // Rendered links open on click, like Obsidian. Tables handle their own clicks (see tableDOM).
         const a = t.closest('.wikilink[data-target], .wikilink[data-att], .cm-link[data-href]');
         if (a && !e.shiftKey) { e.preventDefault(); follow(a); return true; }
-        // Web links in rendered tables open natively on click.
-        if (t.closest('a[href]')) return true;
         if (t.closest('.cm-handle')) { e.preventDefault(); return true; }
         // Clicking an image picks it; a double click shows its Markdown to edit.
         const img = t.closest('.cm-img'), at = img && imageAt(view.state, view.posAtDOM(img));
@@ -327,7 +637,7 @@ const LiveEditor = (() => {
           else pickImage(view, at);
           return true;
         }
-        // Clicking a rendered rule or table puts the cursor there, which shows its Markdown.
+        // Clicking a rendered rule puts the cursor there.
         const r = t.closest('.cm-reveal');
         if (r) { e.preventDefault(); view.focus(); view.dispatch({ selection: { anchor: view.posAtDOM(r) } }); return true; }
         return false;
@@ -357,7 +667,7 @@ const LiveEditor = (() => {
     let source = false;
     const modeExt = () => source ? EditorView.editorAttributes.of({ class: 'cm-source' }) : live;
     const extensions = () => [
-      history(), language, styles, indentUnit.of('  '), EditorView.lineWrapping, focused, picked,
+      history(), language, styles, codeStyles, indentUnit.of('  '), EditorView.lineWrapping, focused, picked,
       EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
       placeholder('Start writing… use [[Note name]] to link notes.'),
       EditorView.contentAttributes.of({ spellcheck: 'false', 'aria-label': 'Note' }),

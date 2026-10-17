@@ -159,9 +159,9 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
     node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer');
   }
 });
-// The editor renders most Markdown itself; marked draws blocks it shows whole, such as tables.
-function renderInto(el, md) {
-  el.innerHTML = DOMPurify.sanitize(marked.parse(md));
+// The editor renders most Markdown itself; marked draws the inside of table cells.
+function renderInline(el, md) {
+  el.innerHTML = DOMPurify.sanitize(marked.parseInline(md));
   loadImages(el);
 }
 // Decrypted images are shown through object URLs that live in memory only and are revoked on lock.
@@ -377,7 +377,7 @@ const editor = LiveEditor.create($('#ed'), {
   resolveImage: target => resolveFile(target),
   noteExists: target => !!resolve(target),
   isImage: name => IMAGE.test(name),
-  fileName, renderInto
+  fileName, renderInline
 });
 $('#list').addEventListener('click', e => { const i = e.target.closest('.item[data-p]'); if (i) openNote(i.dataset.p); });
 

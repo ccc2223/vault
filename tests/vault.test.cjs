@@ -777,3 +777,74 @@ test('clicking an image picks it; handles resize it freely into widthxheight; De
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('tables edit cell by cell with rows and columns added; code blocks highlight by language and copy their code', async () => {
+  const f = await fixture();
+  try {
+    await f.context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+    await unlock(f.page); await settled(f.page);
+    const note = 'Intro\n\n| Name | Link |\n| --- | :-: |\n| **a** | [[Secret draft\\|draft]] |\n\n```js\nconst x = 1; // one\n```\nEnd';
+    await f.page.evaluate(text => createNote('Grid', text), note);
+    await f.page.evaluate(() => editor.view.contentDOM.blur());
+    const cells = f.page.locator('#ed .cm-table th, #ed .cm-table td');
+
+    // The table renders its cells; the escaped pipe stays inside the link.
+    assert.deepEqual(await cells.allTextContents(), ['Name', 'Link', 'a', 'draft']);
+    assert.equal(await f.page.locator('#ed .cm-table td strong').textContent(), 'a');
+    assert.equal(await cells.nth(3).evaluate(c => c.style.textAlign), 'center');
+
+    // Clicking a cell shows its Markdown there; typing rewrites the table's source.
+    await cells.nth(2).click();
+    assert.equal(await cells.nth(2).textContent(), '**a**');
+    await f.page.keyboard.press('End');
+    await f.page.keyboard.type(' b|c');
+    assert.match(await editorText(f.page), /\| \*\*a\*\* b\\\|c \| \[\[Secret draft\\\|draft\]\] \|/);
+    assert.equal(await f.page.evaluate(() => document.activeElement.dataset.r + document.activeElement.dataset.c), '10', 'the caret stays in the cell');
+
+    // Tab moves on, and Tab in the last cell adds a row; Enter in the last row adds another.
+    await f.page.keyboard.press('Tab');
+    await f.page.keyboard.press('Tab');
+    await f.page.keyboard.type('new');
+    await f.page.keyboard.press('Enter');
+    await f.page.keyboard.type('more');
+    let rows = (await editorText(f.page)).split('\n').slice(2, 7);
+    assert.match(rows[3], /^\| new +\| +\|$/);
+    assert.match(rows[4], /^\| more +\| +\|$/);
+    assert.match(rows[1], /^\| -+ \| :-+: \|$/, 'alignment is kept');
+
+    // The + button adds a column; the cell menu deletes a row.
+    await f.page.locator('#ed .cm-table').hover();
+    await f.page.locator('#ed .cm-table-add-col').click();
+    assert.equal(await f.page.evaluate(() => document.activeElement.dataset.r + document.activeElement.dataset.c), '02');
+    await f.page.keyboard.type('Extra');
+    assert.match((await editorText(f.page)).split('\n')[2], /^\| Name +\| Link +\| Extra \|$/);
+    await cells.nth(9).click({ button: 'right' });
+    await f.page.locator('.cm-table-menu button', { hasText: 'Delete row' }).click();
+    assert.equal((await editorText(f.page)).match(/more/), null);
+
+    // A link in a rendered cell opens its note.
+    await f.page.keyboard.press('Escape');
+    await f.page.locator('#ed .cm-table .wikilink', { hasText: 'draft' }).click();
+    await f.page.waitForFunction(() => cur === 'Secret draft.md');
+    await f.page.evaluate(() => openNote('Grid.md'));
+
+    // Code blocks: fences hidden, the language shown as a label, the code highlighted, and a copy button.
+    const head = f.page.locator('#ed .cm-code-head');
+    assert.equal(await head.locator('.cm-code-info').textContent(), 'js');
+    assert.doesNotMatch(await f.page.locator('#ed .cm-content').textContent(), /```/);
+    assert.equal(await f.page.locator('#ed .cm-codeblock .hl-keyword').first().textContent(), 'const');
+    assert.equal(await f.page.locator('#ed .cm-codeblock .hl-comment').first().textContent(), '// one');
+    await f.page.locator('#ed .cm-code-copy').click();
+    assert.equal(await f.page.evaluate(() => navigator.clipboard.readText()), 'const x = 1; // one');
+    assert.equal(await f.page.locator('#ed .cm-code-copy').textContent(), 'Copied');
+
+    // The code stays editable in place.
+    await f.page.locator('#ed .cm-codeblock .hl-comment').click();
+    await f.page.keyboard.press('End');
+    await f.page.keyboard.type(' two');
+    assert.match(await editorText(f.page), /const x = 1; \/\/ one two\n```\nEnd$/);
+    await settled(f.page);
+    assert.match(await f.page.evaluate(() => notes.get('Grid.md').content), /\| Name +\| Link +\| Extra \|/);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
