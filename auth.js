@@ -76,7 +76,7 @@ const Auth = {
       for (const key of ['vault.gh', 'vault.last', 'vault.url']) localStorage.removeItem(key);
       this.settings = { url: defaultURL, branch: 'main' };
     }
-    document.getElementById('unlock-url').value = this.settings.url || '';
+    document.getElementById('unlock-url').value = this.settings.url || defaultURL || '';
     document.getElementById('unlock-form').onsubmit = event => { event.preventDefault(); void this.unlock(); };
     document.getElementById('retry-lock').onclick = () => this.lock('Locked. Your saved notes are encrypted.');
     this.channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('vault-security-v3') : null;
