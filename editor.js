@@ -42,25 +42,67 @@ const LiveEditor = (() => {
   });
   const WEB = /^(https?:|data:image\/)/i;
 
+  // A clicked image is picked: it stays rendered, its Markdown is selected, and it shows resize handles.
+  const pick = StateEffect.define();
+  const picked = StateField.define({
+    create: () => null,
+    update(v, tr) {
+      for (const e of tr.effects) if (e.is(pick)) return e.value;
+      if (!v || tr.selection || tr.effects.some(e => e.is(setFocus) && !e.value)) return null;
+      return tr.docChanged ? { from: tr.changes.mapPos(v.from, 1), to: tr.changes.mapPos(v.to, -1) } : v;
+    }
+  });
+  // Image sizes: ![[a.png|300]], ![[a.png|300x200]], ![[a.png|alt|300x200]] and ![alt|300x200](a.png), like Obsidian.
+  const SIZE = /^(\d+)(?:x(\d+))?$/;
+  const splitSize = label => {
+    const parts = (label || '').split('|'), m = SIZE.exec(parts[parts.length - 1].trim());
+    if (m) parts.pop();
+    return { alt: parts.join('|').trim(), size: m && [m[1], m[2]] };
+  };
+  const withSize = (label, w, h) => { const { alt } = splitSize(label); return (alt ? alt + '|' : '') + w + 'x' + h; };
+  function sized(src, w, h) {
+    const m = WIKI.exec(src);
+    if (m) return `![[${m[2]}${m[3] || ''}|${withSize(m[4], w, h)}]]` + src.slice(m[0].length);
+    const md = /^!\[([^\]]*)\]/.exec(src);
+    return '![' + withSize(md[1], w, h) + ']' + src.slice(md[0].length);
+  }
+  const imageAt = (state, pos) => {
+    for (const side of [1, -1]) for (let n = syntaxTree(state).resolveInner(pos, side); n; n = n.parent)
+      if (n.name === 'Embed' || n.name === 'Image') return { from: n.from, to: n.to };
+    return null;
+  };
+
   function create(parent, hooks) {
     /* ---------- widgets ---------- */
     const missing = name => Object.assign(document.createElement('span'), { className: 'att missing', title: 'Image not found', textContent: name });
     class ImageWidget extends WidgetType {
       // src: {url} for web images, {path} for an attachment, or null when the image can't be found
-      constructor(src, alt, size, name) { super(); Object.assign(this, { src, alt, size, name }); this.key = JSON.stringify([src, alt, size, name]); }
+      constructor(src, alt, size, name, sel) { super(); Object.assign(this, { src, alt, size, name, sel }); this.key = JSON.stringify([src, alt, size, name, sel]); }
       eq(o) { return o.key === this.key; }
       ignoreEvent() { return false; }
       toDOM(view) {
-        if (!this.src) return Object.assign(missing(this.name), { className: 'att missing cm-reveal' });
-        const img = Object.assign(document.createElement('img'), { className: 'att cm-reveal', alt: this.alt });
-        if (this.size) { img.width = +this.size[0]; if (this.size[1]) img.height = +this.size[1]; }
+        const wrap = document.createElement('span');
+        wrap.className = 'cm-img cm-reveal' + (this.sel ? ' cm-picked' : '');
+        if (!this.src) { wrap.append(missing(this.name)); return wrap; }
+        const img = Object.assign(document.createElement('img'), { className: 'att', alt: this.alt });
+        // Width and height both apply, so a resized image keeps the shape it was given.
+        if (this.size) {
+          img.width = +this.size[0]; img.style.width = this.size[0] + 'px';
+          if (this.size[1]) { img.height = +this.size[1]; img.style.height = this.size[1] + 'px'; }
+        }
         img.onload = () => view.requestMeasure();
         if (this.src.url) img.src = this.src.url;
         else {
           img.dataset.att = this.src.path;
           hooks.imageURL(this.src.path).then(u => { img.src = u; }, () => img.replaceWith(missing(this.name)));
         }
-        return img;
+        wrap.append(img);
+        if (this.sel) for (const dir of ['e', 's', 'se']) {
+          const h = Object.assign(document.createElement('span'), { className: 'cm-handle cm-handle-' + dir });
+          h.addEventListener('pointerdown', e => resize(view, e, img, dir));
+          wrap.append(h);
+        }
+        return wrap;
       }
     }
     class TableWidget extends WidgetType {
@@ -107,10 +149,11 @@ const LiveEditor = (() => {
         const { cls, attrs } = link(target);
         hide(node.from, shown[0]); mark(shown[0], shown[1], cls, attrs); hide(shown[1], node.to);
       };
+      const sel = state.field(picked);
       const image = (node, src, alt, size, name) => {
-        const widget = new ImageWidget(src, alt, size, name);
-        // While editing an embed its source shows, with the image kept under it.
-        if (touches(node.from, node.to)) after(node.to, widget); else swap(node.from, node.to, widget);
+        const on = !!sel && sel.from === node.from && sel.to === node.to, widget = new ImageWidget(src, alt, size, name, on);
+        // While editing an embed its source shows, with the image kept under it. A picked image stays rendered.
+        if (!on && touches(node.from, node.to)) after(node.to, widget); else swap(node.from, node.to, widget);
       };
 
       const tree = ensureSyntaxTree(state, doc.length, 200) || syntaxTree(state);
@@ -163,15 +206,15 @@ const LiveEditor = (() => {
           else if (name === 'Embed') {
             const m = WIKI.exec(text(node.from, node.to)), target = m[2].trim(), alias = (m[4] || '').trim();
             if (!hooks.isImage(target)) return wikilink(node, 3);
-            const path = hooks.resolveImage(target), size = /^(\d+)(?:x(\d+))?$/.exec(alias);
-            image(node, path && { path }, size ? hooks.fileName(target) : alias || hooks.fileName(target), size && [size[1], size[2]], target);
+            const path = hooks.resolveImage(target), { alt, size } = splitSize(alias);
+            image(node, path && { path }, alt || hooks.fileName(target), size, target);
           }
           else if (name === 'Image') {
             const marks = kids(node, 'LinkMark'), url = node.getChild('URL');
             if (!url || marks.length < 2) return;
-            const href = text(url.from, url.to).replace(/^<(.*)>$/, '$1'), alt = text(marks[0].to, marks[1].from);
+            const href = text(url.from, url.to).replace(/^<(.*)>$/, '$1'), { alt, size } = splitSize(text(marks[0].to, marks[1].from));
             const path = !WEB.test(href) && hooks.resolveImage(href);
-            if (WEB.test(href) || path || hooks.isImage(href)) image(node, WEB.test(href) ? { url: href } : path ? { path } : null, alt, null, alt || href);
+            if (WEB.test(href) || path || hooks.isImage(href)) image(node, WEB.test(href) ? { url: href } : path ? { path } : null, alt, size, alt || href);
             return false;
           }
           else if (name === 'Link') {
@@ -197,11 +240,58 @@ const LiveEditor = (() => {
     const live = StateField.define({
       create: build,
       update(deco, tr) {
-        const redo = tr.docChanged || tr.selection || tr.effects.some(e => e.is(setFocus) || e.is(refresh)) || syntaxTree(tr.state) !== syntaxTree(tr.startState);
+        const redo = tr.docChanged || tr.selection || tr.effects.some(e => e.is(setFocus) || e.is(refresh) || e.is(pick)) || syntaxTree(tr.state) !== syntaxTree(tr.startState);
         return redo ? build(tr.state) : deco;
       },
       provide: f => EditorView.decorations.from(f)
     });
+
+    /* ---------- picking, deleting and resizing images ---------- */
+    function pickImage(view, at) {
+      view.focus();
+      view.dispatch({ selection: { anchor: at.from, head: at.to }, effects: pick.of(at) });
+    }
+    // Del or Backspace removes a picked image from the note (its file stays in attachments/), with its line if it was alone there.
+    function deletePicked(view) {
+      const p = view.state.field(picked); if (!p) return false;
+      const doc = view.state.doc, l = doc.lineAt(p.from);
+      let { from, to } = p;
+      if (doc.lineAt(to).number === l.number && l.text.trim() === doc.sliceString(from, to)) {
+        if (l.to < doc.length) { from = l.from; to = l.to + 1; } else if (l.from > 0) { from = l.from - 1; to = l.to; }
+      }
+      view.dispatch({ changes: { from, to }, selection: { anchor: from }, scrollIntoView: true, userEvent: 'delete' });
+      return true;
+    }
+    function unpick(view) {
+      const p = view.state.field(picked); if (!p) return false;
+      view.dispatch({ selection: { anchor: p.to } });
+      return true;
+    }
+    // Dragging a handle resizes freely (no aspect ratio lock) and saves the size in the Markdown as widthxheight.
+    function resize(view, e, img, dir) {
+      if (e.button !== 0) return;
+      e.preventDefault(); e.stopPropagation();
+      const handle = e.currentTarget, r = img.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
+      const line = img.closest('.cm-line') || view.contentDOM;
+      const maxW = Math.max(16, line.getBoundingClientRect().right - parseFloat(getComputedStyle(line).paddingRight) - r.left);
+      let w = r.width, h = r.height;
+      handle.setPointerCapture(e.pointerId);
+      const move = ev => {
+        if (dir !== 's') w = Math.min(maxW, Math.max(16, r.width + ev.clientX - x0));
+        if (dir !== 'e') h = Math.max(16, r.height + ev.clientY - y0);
+        img.style.width = w + 'px'; img.style.height = h + 'px';
+      };
+      const end = ev => {
+        handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', end); handle.removeEventListener('pointercancel', end);
+        const p = view.state.field(picked);
+        if (!p || ev.type === 'pointercancel') { view.dispatch({ effects: refresh.of(null) }); return; }
+        const src = view.state.sliceDoc(p.from, p.to), next = sized(src, Math.round(w), Math.round(h));
+        if (next === src) return;
+        const at = { from: p.from, to: p.from + next.length };
+        view.dispatch({ changes: { from: p.from, to: p.to, insert: next }, selection: { anchor: at.from, head: at.to }, effects: pick.of(at), userEvent: 'input' });
+      };
+      handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', end); handle.addEventListener('pointercancel', end);
+    }
 
     /* ---------- events ---------- */
     function toggleTask(view, pos) {
@@ -226,7 +316,16 @@ const LiveEditor = (() => {
         if (a && !e.shiftKey) { e.preventDefault(); follow(a); return true; }
         // Web links in rendered tables open natively on click.
         if (t.closest('a[href]')) return true;
-        // Clicking a rendered image, rule or table puts the cursor there, which shows its Markdown.
+        if (t.closest('.cm-handle')) { e.preventDefault(); return true; }
+        // Clicking an image picks it; a double click shows its Markdown to edit.
+        const img = t.closest('.cm-img'), at = img && imageAt(view.state, view.posAtDOM(img));
+        if (at) {
+          e.preventDefault();
+          if (e.detail > 1) { view.focus(); view.dispatch({ selection: { anchor: at.to - (view.state.sliceDoc(at.to - 2, at.to) === ']]' ? 2 : 1) } }); }
+          else pickImage(view, at);
+          return true;
+        }
+        // Clicking a rendered rule or table puts the cursor there, which shows its Markdown.
         const r = t.closest('.cm-reveal');
         if (r) { e.preventDefault(); view.focus(); view.dispatch({ selection: { anchor: view.posAtDOM(r) } }); return true; }
         return false;
@@ -256,11 +355,12 @@ const LiveEditor = (() => {
     let source = false;
     const modeExt = () => source ? EditorView.editorAttributes.of({ class: 'cm-source' }) : live;
     const extensions = () => [
-      history(), language, styles, indentUnit.of('  '), EditorView.lineWrapping, focused,
+      history(), language, styles, indentUnit.of('  '), EditorView.lineWrapping, focused, picked,
       EditorView.focusChangeEffect.of((state, focusing) => setFocus.of(focusing)),
       placeholder('Start writing… use [[Note name]] to link notes.'),
       EditorView.contentAttributes.of({ spellcheck: 'false', 'aria-label': 'Note' }),
       Prec.highest(EditorView.domEventHandlers({ keydown: e => hooks.keydown(e) })),
+      Prec.highest(keymap.of([{ key: 'Backspace', run: deletePicked }, { key: 'Delete', run: deletePicked }, { key: 'Escape', run: unpick }])),
       Prec.high(keymap.of([
         { key: 'Enter', run: insertNewlineContinueMarkup }, { key: 'Backspace', run: deleteMarkupBackward },
         { key: 'Tab', run: tab, shift: indentLess }

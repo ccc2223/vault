@@ -106,7 +106,13 @@ function resolve(target) {
 
 /* ---------- markdown ---------- */
 const imgTag = (path, alt, size) => `<img class="att" data-att="${esc(path)}" alt="${esc(alt)}"` +
-  (size ? ` width="${size[1]}"` + (size[2] ? ` height="${size[2]}"` : '') : '') + '>';
+  (size ? ` width="${size[1]}"` + (size[2] ? ` height="${size[2]}" style="height:${size[2]}px"` : '') : '') + '>';
+// "alt|300x200" -> alt and size, like Obsidian (the size is always last).
+const splitSize = label => {
+  const parts = (label || '').split('|'), m = /^(\d+)(?:x(\d+))?$/.exec(parts[parts.length - 1].trim());
+  if (m) parts.pop();
+  return { alt: parts.join('|').trim(), size: m };
+};
 const missingImg = name => `<span class="att missing" title="Image not found">${esc(name)}</span>`;
 marked.use({
   gfm: true, breaks: true,
@@ -114,8 +120,8 @@ marked.use({
     // Local Markdown images show the encrypted copy on this device; web images keep the default renderer.
     image(href, title, text) {
       if (!href || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(href)) return false;
-      const p = resolveFile(href);
-      if (p) return imgTag(p, text || '');
+      const p = resolveFile(href), { alt, size } = splitSize(text);
+      if (p) return imgTag(p, alt, size);
       return IMAGE.test(href) ? missingImg(text || href) : false;
     }
   },
@@ -129,8 +135,8 @@ marked.use({
     },
     renderer(t) {
       if (!IMAGE.test(t.target)) return wikilinkHTML(t.target, t.text || t.target);
-      const p = resolveFile(t.target), size = /^(\d+)(?:x(\d+))?$/.exec(t.text);
-      return p ? imgTag(p, size ? fileName(t.target) : t.text || fileName(t.target), size) : missingImg(t.target);
+      const p = resolveFile(t.target), { alt, size } = splitSize(t.text);
+      return p ? imgTag(p, alt || fileName(t.target), size) : missingImg(t.target);
     }
   }, {
     name: 'wikilink', level: 'inline',
