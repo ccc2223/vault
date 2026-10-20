@@ -70,6 +70,14 @@ const TablePicker = (() => {
       const pos = editor.view.posAtCoords({ x: ctx.x, y: ctx.y }) ?? editor.pos;
       open(ctx.x, ctx.y, (rows, cols) => editor.insertTable(rows, cols, pos));
     }
+  }, {
+    label: 'Insert code block',
+    run: () => {
+      // Wraps the selection when the menu was opened on it, otherwise a new block where the menu was.
+      const pos = editor.view.posAtCoords({ x: ctx.x, y: ctx.y }) ?? editor.pos, { from, to } = editor.view.state.selection.main;
+      if (from < to && pos >= from && pos <= to) editor.insertCodeBlock(from, to);
+      else editor.insertCodeBlock(pos, pos);
+    }
   }]);
 
   return { open, close, get isOpen() { return !!picker; } };
