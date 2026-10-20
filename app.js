@@ -586,6 +586,7 @@ $('#tbl').onclick = () => {
   TablePicker.open(r.left, r.bottom + 4, (rows, cols) => { editor.insertTable(rows, cols, pos); });
 };
 $('#img').onclick = () => $('#img-in').click();
+$('#code').onclick = () => editor.insertCodeBlock();
 $('#img-in').onchange = () => { const list = imagesIn($('#img-in').files); $('#img-in').value = ''; tryAdd(list, false); };
 $('#bl-body').addEventListener('click', e => { const i = e.target.closest('.b[data-p]'); if (i) openNote(i.dataset.p); });
 $('#q').addEventListener('input', renderList);
@@ -1333,6 +1334,7 @@ $('#cmd').onclick = () => openCommands();
   command('Show tags', () => { document.body.classList.add('drawer'); $('#tags').open = true; $('#tag-list button')?.focus(); });
   command('Insert table…', () => $('#tbl').click(), '', hasNote);
   command('Insert image…', () => $('#img').click(), '', hasNote);
+  command('Insert code block', () => editor.insertCodeBlock(), '', hasNote);
   // Turns the current line (or list item) into a task, like Obsidian's "Toggle checklist".
   command('Insert checkbox', () => {
     const v = editor.view, line = v.state.doc.lineAt(editor.pos), m = /^(\s*)(?:[-*+] (?:\[[ xX]\] )?)?/.exec(line.text);

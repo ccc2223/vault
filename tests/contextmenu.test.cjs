@@ -66,7 +66,7 @@ test('right click opens a placeholder menu that names the context and closes aga
     assert.equal(await page.locator('#ctx').count(), 0);
 
     await page.locator('#ed .cm-content').click({ button: 'right', position: { x: 40, y: 10 } });
-    assert.deepEqual(await menuText(page), ['Insert table…']);
+    assert.deepEqual(await menuText(page), ['Insert table…', 'Insert code block']);
     await page.locator('#list .item[data-p="Beta.md"]').click({ button: 'right' });
     assert.equal((await menuText(page))[0], 'Note: Beta', 'a new menu replaces the open one');
     await page.keyboard.press('Escape');
@@ -115,7 +115,7 @@ test('a touch long press over 700 ms opens the menu; shorter presses and drags d
     await press(x, y, 900, 40);
     assert.equal(await page.locator('#ctx').count(), 0, 'moving cancels the press');
     await press(x, y, 900);
-    assert.deepEqual(await menuText(page), ['Insert table…']);
+    assert.deepEqual(await menuText(page), ['Insert table…', 'Insert code block']);
     await page.touchscreen.tap(5, 700);
     assert.equal(await page.locator('#ctx').count(), 0);
 
@@ -182,7 +182,7 @@ test('the gear menu holds rarely used actions; the toolbar fits on one row on a 
   const { context, page, errors } = await unlocked({ hasTouch: true, isMobile: true, viewport: { width: 375, height: 700 } });
   try {
     const visible = await page.locator('#bar > button:visible, #bar > div > button:visible').evaluateAll(els => els.map(e => e.id));
-    assert.deepEqual(visible, ['menu', 'tbl', 'img', 'ol-btn', 'switch', 'gear']);
+    assert.deepEqual(visible, ['menu', 'tbl', 'img', 'code', 'ol-btn', 'switch', 'gear']);
     const tops = await page.locator('#bar button:visible').evaluateAll(els => new Set(els.map(e => Math.round(e.getBoundingClientRect().top))).size);
     assert.equal(tops, 1, 'one row of buttons');
 

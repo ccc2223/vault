@@ -888,6 +888,37 @@ test('tables edit cell by cell with rows and columns added; code blocks highligh
   } finally { await f.context.close(); }
 });
 
+test('the Code button, the editor menu and the command insert a fenced code block, wrapping selected text', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => createNote('Snips', 'Intro'));
+    // Nothing selected: a new block below the current line, the cursor after the opening fence to type a language.
+    await f.page.evaluate(() => editor.focus(true));
+    await f.page.locator('#code').click();
+    assert.equal(await f.page.locator('#ed .cm-code-hint').textContent(), 'language');
+    await f.page.keyboard.type('js');
+    assert.equal(await f.page.locator('#ed .cm-code-hint').count(), 0);
+    await f.page.keyboard.press('Enter');
+    await f.page.keyboard.type('let a = 1');
+    assert.equal(await editorText(f.page), 'Intro\n```js\nlet a = 1\n```\n');
+    assert.equal(await f.page.locator('#ed .cm-codeblock .hl-keyword').first().textContent(), 'let');
+
+    // Selected text is wrapped; text sharing its lines moves onto lines of its own; fences inside get a longer fence.
+    await f.page.evaluate(() => { editor.load('see ```x``` here'); editor.view.dispatch({ selection: { anchor: 4, head: 11 } }); });
+    await f.page.locator('#code').click();
+    assert.equal(await editorText(f.page), 'see \n````\n```x```\n````\n here');
+
+    // The right-click menu inserts below the line it was opened on.
+    await f.page.evaluate(() => editor.load('One\n\nTwo'));
+    const two = f.page.locator('#ed .cm-line', { hasText: 'Two' });
+    await two.click({ button: 'right' });
+    await f.page.locator('#ctx button', { hasText: 'Insert code block' }).click();
+    assert.equal(await editorText(f.page), 'One\n\nTwo\n```\n```\n');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
 test('Escape, arrow down, or a click or tap below a table leave it, and typing there starts a paragraph instead of a row', async () => {
   const mid = 'Intro\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nEnd', last = 'Intro\n\n| a | b |\n| - | - |\n| 1 | 2 |';
   const tail = /\| 1x +\| 2 +\|\n\nAfter(\nEnd)?$/;

@@ -442,6 +442,12 @@ const LiveEditor = (() => {
       }
     }
     const copy = new CopyWidget();
+    // A hint on the header of a block with no language yet, while the cursor sits there to type one.
+    class LangHint extends WidgetType {
+      eq() { return true; }
+      toDOM() { return Object.assign(document.createElement('span'), { className: 'cm-code-hint', textContent: 'language' }); }
+    }
+    const langHint = Decoration.widget({ widget: new LangHint(), side: 1 });
     function codeAt(state, pos) {
       let node = syntaxTree(state).resolveInner(pos, -1);
       while (node && node.name !== 'FencedCode') node = node.parent;
@@ -539,8 +545,10 @@ const LiveEditor = (() => {
                 line(node.from, 'cm-code-head');
                 if (marks.length > 1 && doc.lineAt(marks[marks.length - 1].from).from > node.from) line(marks[marks.length - 1].from, 'cm-code-foot');
               }
-              for (const m of kids(node, 'CodeInfo')) mark(m.from, m.to, 'cm-code-info');
-              after(doc.lineAt(node.from).to, copy);
+              const info = kids(node, 'CodeInfo'), head = doc.lineAt(node.from);
+              for (const m of info) mark(m.from, m.to, 'cm-code-info');
+              if (!info.length && state.selection.ranges.some(r => r.empty && r.head === head.to)) out.push(langHint.range(head.to));
+              after(head.to, copy);
             }
             return false;
           }
@@ -763,6 +771,22 @@ const LiveEditor = (() => {
         view.focus();
         // Source mode shows no grid; the caret then goes in the first cell's text.
         if (!focusCell(view, from, 0, 0)) view.dispatch({ selection: EditorSelection.cursor(from + 2) });
+      },
+      // A fenced code block around from..to (empty: a new block on its own lines), like Obsidian's command. The
+      // cursor lands after the opening fence to type a language; Enter then starts the code.
+      insertCodeBlock(from = view.state.selection.main.from, to = view.state.selection.main.to) {
+        const doc = view.state.doc;
+        // Nothing selected on a line of text: the block goes below that line rather than splitting it.
+        if (from === to && doc.lineAt(from).text.trim()) from = to = doc.lineAt(from).to;
+        const code = doc.sliceString(from, to).replace(/\n$/, '');
+        // A fence longer than any backtick run inside, so wrapped code that holds fences stays whole.
+        const fence = '`'.repeat(Math.max(3, ...[...code.matchAll(/`+/g)].map(m => m[0].length + 1)));
+        const before = doc.sliceString(doc.lineAt(from).from, from), after = doc.sliceString(to, doc.lineAt(to).to);
+        // Text sharing the first or last line stays outside on its own line.
+        const insert = (before.trim() ? '\n' : '') + fence + '\n' + (code ? code + '\n' : '') + fence + (after.trim() || to === doc.length ? '\n' : '');
+        const at = from + (before.trim() ? 1 : 0) + fence.length;
+        view.dispatch({ changes: { from, to, insert }, selection: EditorSelection.cursor(at), scrollIntoView: true, userEvent: 'input' });
+        view.focus();
       },
       // Put the cursor at pos and scroll its line to the top (a heading picked in the outline).
       goto(pos) {

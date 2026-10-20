@@ -95,6 +95,7 @@ input,textarea{font:inherit;color:inherit}
 #ed .cm-line.cm-code-head{text-align:right;font-size:.8em;padding-right:64px}
 #ed .cm-code-head .cm-code-info{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 #ed .cm-code-foot{font-size:.6em}
+#ed .cm-code-hint{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--mute);opacity:.6;pointer-events:none}
 #ed .cm-code-copy{position:absolute;right:8px;top:4px;font:12px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:1px 8px;color:var(--mute);background:var(--bg);opacity:.75}
 #ed .cm-code-copy:hover{opacity:1;color:var(--fg)}
 #ed .cm-codeblock .hl-keyword{color:var(--hl-keyword)}
@@ -243,7 +244,8 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
   #bar{flex-wrap:nowrap;padding:8px 10px}
   #title{min-width:0}
   #bar .lbl,#bar .sep{display:none}
-  #bar button{width:40px;height:40px;padding:0}
+  #bar{gap:4px}
+  #bar button{width:38px;height:38px;padding:0}
   #ed .cm-line{padding:0 14px}
   #ed .cm-codeblock,#ed .cm-quote{margin:0 14px}
   #ed .cm-table{padding:4px 14px}
@@ -267,6 +269,7 @@ button:disabled{opacity:.6;cursor:wait}
   <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
   <symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M12 3v18"/></symbol>
   <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/></symbol>
   <symbol id="i-outline" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3"/></symbol>
@@ -318,6 +321,7 @@ button:disabled{opacity:.6;cursor:wait}
     <button id="tbl" title="Insert table"><svg class="ic" aria-hidden="true"><use href="#i-table"/></svg><span class="lbl">Table</span></button>
     <button id="img" title="Add image (or paste or drop one into the editor)"><svg class="ic" aria-hidden="true"><use href="#i-image"/></svg><span class="lbl">Image</span></button>
     <input id="img-in" type="file" accept="image/*" multiple hidden>
+    <button id="code" title="Insert code block (wraps selected text)"><svg class="ic" aria-hidden="true"><use href="#i-code"/></svg><span class="lbl">Code</span></button>
     <span class="sep" aria-hidden="true"></span>
     <button id="ol-btn" class="ico" title="Outline" aria-label="Outline"><svg class="ic" aria-hidden="true"><use href="#i-outline"/></svg></button>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><span class="lbl">Find</span></button>
