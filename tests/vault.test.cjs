@@ -1276,3 +1276,63 @@ test('attachments open in an in-app viewer, SVG scripts never run, and added SVG
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });
+
+test('remote Markdown and table images require a click, send no referrer, and reset on lock', async () => {
+  const f = await fixture();
+  const requests = [];
+  await f.context.route('https://images.example/**', async route => {
+    requests.push({ url: route.request().url(), referrer: route.request().headers().referer });
+    await route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/S5sAAAAASUVORK5CYII=', 'base64') });
+  });
+  f.remote.set('Remote.md', { sha: 'remote-1', content: '![Outside](https://images.example/main.png)\n\n| Picture |\n| --- |\n| ![Cell](https://images.example/cell.png) |\n\nEnd\n' });
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      await openNote('Remote.md');
+      editor.view.dispatch({ selection: { anchor: editor.view.state.doc.length } });
+    });
+    await f.page.waitForFunction(() => document.querySelectorAll('#ed .remote-image').length === 2);
+    assert.equal(requests.length, 0, 'rendering sends no image requests');
+    await f.page.locator('.cm-img .remote-image').click();
+    await f.page.waitForFunction(() => document.querySelector('.cm-img img')?.complete);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://images.example/main.png');
+    assert.equal(requests[0].referrer, undefined);
+    await f.page.locator('.cm-table .remote-image').click();
+    await f.page.waitForFunction(() => document.querySelector('.cm-table img')?.complete);
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].url, 'https://images.example/cell.png');
+    assert.equal(requests[1].referrer, undefined);
+    await f.page.evaluate(() => Auth.lock()); await locked(f.page);
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => editor.view.dispatch({ selection: { anchor: editor.view.state.doc.length } }));
+    await f.page.waitForFunction(() => document.querySelectorAll('#ed .remote-image').length === 2);
+    assert.equal(requests.length, 2, 'unlock does not silently reload remote images');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('sanitized inline HTML cannot load images via srcset, CSS, SVG, or media elements', async () => {
+  const f = await fixture();
+  const requests = [];
+  await f.context.route('https://images.example/**', route => { requests.push(route.request().url()); return route.abort(); });
+  try {
+    await unlock(f.page); await settled(f.page);
+    const result = await f.page.evaluate(async () => {
+      const host = document.createElement('div'); host.id = 'privacy-fixture'; document.body.append(host);
+      renderInline(host, '<img src="https://images.example/raw.png" srcset="https://images.example/srcset.png 2x">' +
+        '<picture><source srcset="https://images.example/picture.png"><img src="https://images.example/fallback.png"></picture>' +
+        '<span style="background-image:url(https://images.example/style.png)">text</span>' +
+        '<style>body { background-image: url(https://images.example/stylesheet.png); }</style>' +
+        '<svg><image href="https://images.example/svg.png" /></svg>' +
+        '<video poster="https://images.example/poster.png"></video><input type="image" src="https://images.example/input.png">');
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return { buttons: host.querySelectorAll('.remote-image').length, active: host.querySelectorAll('img[src], [srcset], [style], style, link, svg, source, video, input').length };
+    });
+    assert.equal(result.buttons, 2);
+    assert.equal(result.active, 0);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+

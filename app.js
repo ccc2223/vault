@@ -133,7 +133,7 @@ const missingImg = name => `<span class="att missing" title="Image not found">${
 marked.use({
   gfm: true, breaks: true,
   renderer: {
-    // Local Markdown images show the encrypted copy on this device; web images keep the default renderer.
+    // Local Markdown images show the encrypted copy on this device; web images need explicit loading.
     image(href, title, text) {
       if (!href || /^[a-z][a-z0-9+.-]*:|^\/\//i.test(href)) return false;
       const p = resolveFile(href), { alt, size } = splitSize(text);
@@ -174,10 +174,49 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
   if (node.tagName === 'A' && node.getAttribute('href')) {
     node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer');
   }
+  if (node.tagName === 'IMG') {
+    // Keep URLs inert through innerHTML insertion. Only protectImage may set a web image's src.
+    const src = node.getAttribute('src');
+    node.removeAttribute('src'); node.removeAttribute('srcset'); node.removeAttribute('data-vault-image');
+    node.setAttribute('referrerpolicy', 'no-referrer');
+    if (src) node.setAttribute('data-vault-image', src);
+  }
 });
+function protectImage(img, value) {
+  img.referrerPolicy = 'no-referrer';
+  if (/^data:image\//i.test(value)) { img.src = value; return img; }
+  let url;
+  try { url = new URL(value, location.href); } catch {}
+  if (!url || url.protocol !== 'https:' || url.username || url.password) {
+    return Object.assign(document.createElement('span'), { className: 'att missing', textContent: 'Image blocked' });
+  }
+  const epoch = Auth.epoch;
+  const button = Object.assign(document.createElement('button'), {
+    type: 'button', className: 'remote-image', textContent: 'Load remote image',
+    title: 'Loading shares your IP address with ' + url.hostname
+  });
+  if (img.alt) button.setAttribute('aria-label', 'Load remote image: ' + img.alt);
+  // Do not select the image or enter a table cell instead of activating its privacy control.
+  button.addEventListener('mousedown', event => event.stopPropagation());
+  button.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
+  button.addEventListener('click', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (!event.isTrusted || !Auth.active || Auth.epoch !== epoch || !Auth.checkIdle()) return;
+    img.src = url.href; button.replaceWith(img);
+  });
+  return button;
+}
 // The editor renders most Markdown itself; marked draws the inside of table cells.
 function renderInline(el, md) {
-  el.innerHTML = DOMPurify.sanitize(marked.parseInline(md));
+  // Restrict alternate image-loading paths in untrusted HTML (srcset, CSS, SVG and media).
+  el.innerHTML = DOMPurify.sanitize(marked.parseInline(md), {
+    USE_PROFILES: { html: true }, FORBID_TAGS: ['input', 'picture', 'source', 'video', 'audio', 'style', 'link'],
+    FORBID_ATTR: ['style', 'srcset', 'background']
+  });
+  for (const img of el.querySelectorAll('img[data-vault-image]')) {
+    const src = img.dataset.vaultImage; delete img.dataset.vaultImage;
+    img.replaceWith(protectImage(img, src));
+  }
   loadImages(el);
 }
 // Decrypted images are shown through object URLs that live in memory only and are revoked on lock.
@@ -230,7 +269,7 @@ async function flush() {
 
 /* ---------- trash and note history ---------- */
 // Earlier versions and deleted notes stay on this device only, encrypted one record per version like images, and
-// listed in the sealed vault as {id, path, time, size, hash, why, trashed}. GitHub keeps only the current notes.
+// listed in the sealed vault as {id, path, time, size, hash, why, trashed}. GitHub retains synced revisions in Git history.
 const KEEP_VERSIONS = 20, KEEP_MS = 30 * 86400000, VERSION_GAP = 5 * 60000;
 const versionWaits = new Set();  // versions still being encrypted; saves wait for them
 const versioned = new Map();     // path -> when this session last kept a version before an edit
@@ -514,6 +553,7 @@ const editor = LiveEditor.create($('#ed'), {
   follow: (target, heading) => followLink(target, heading).catch(error => { if (Auth.active) setStatus(error.message, true); }),
   openAttachment: path => openAttachment(path).catch(() => {}),
   imageURL(path) { const f = files.get(path); return f ? attachmentURL(f) : Promise.reject(new Error('Image not found')); },
+  protectImage,
   resolveImage: target => resolveFile(target),
   noteExists: target => !!resolve(target),
   isImage: name => IMAGE.test(name),
@@ -1476,3 +1516,4 @@ const App = {
   flush, sync
 };
 Auth.start(App, SYNC_URL);
+

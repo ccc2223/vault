@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vault-sync-01",
+  "main": "worker.js",
+  "compatibility_date": "2026-01-01",
+  "vars": {
+    "REPO": "ccc2223/vault-files",
+    "ALLOWED_ORIGIN": "https://ccc2223.github.io"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "LOGIN_LIMITER", "class_name": "LoginLimiter" }]
+  },
+  "migrations": [{ "tag": "v1-login-limiter", "new_sqlite_classes": ["LoginLimiter"] }]
+}

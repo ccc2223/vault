@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- Scripts only from this site; network only to this site and the sync Worker. Remote images stay allowed. -->
+<!-- Scripts only from this site; network only to this site and the sync Worker. Remote images require a click. -->
+<meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; connect-src 'self' https://vault-sync-01.chriscleven.workers.dev; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Vault</title>
@@ -417,3 +418,4 @@ button:disabled{opacity:.6;cursor:wait}
 
 </body>
 </html>
+
