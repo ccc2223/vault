@@ -53,7 +53,17 @@ input,textarea{font:inherit;color:inherit}
 #main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
 #bar{display:flex;align-items:center;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);flex-wrap:wrap}
 #bar .sep{width:1px;align-self:stretch;margin:4px;background:var(--border)}
-#del:hover{border-color:var(--danger);color:var(--danger)}
+/* Gear menu: rarely used actions, the same on desktop and phone */
+#gear-wrap{position:relative;display:flex}
+#gear[aria-expanded="true"]{background:var(--bg3);border-color:var(--accent)}
+#gear-menu{position:absolute;z-index:25;top:calc(100% + 6px);right:0;min-width:220px;padding:4px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.3);display:flex;flex-direction:column}
+#bar #gear-menu button{justify-content:flex-start;width:auto;height:auto;min-height:0;padding:7px 10px;background:none;border:0;border-radius:5px;box-shadow:none;font-weight:400;text-align:left;white-space:nowrap}
+#bar #gear-menu button:not(:disabled):hover,#bar #gear-menu button:not(:disabled):focus{background:var(--accent);color:#fff;outline:0}
+#bar #gear-menu button:disabled{color:var(--mute);cursor:default;opacity:1}
+#gear-menu .danger:not(:disabled){color:var(--danger)}
+#gear-menu kbd{margin-left:auto;padding-left:16px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;opacity:.7}
+#gear-menu hr{border:0;border-top:1px solid var(--border);margin:4px 2px}
+@media (pointer:coarse){#bar #gear-menu button{padding:11px 12px}#gear-menu kbd{display:none}}
 #title{flex:1;min-width:80px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:text}
 #menu{display:none}
 #panes{flex:1;display:flex;min-height:0;position:relative}
@@ -230,6 +240,8 @@ dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
   body.drawer #side{transform:none}
   body.drawer #back{display:block;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:15}
   #menu{display:inline-flex}
+  #bar{flex-wrap:nowrap;padding:8px 10px}
+  #title{min-width:0}
   #bar .lbl,#bar .sep{display:none}
   #bar button{width:40px;height:40px;padding:0}
   #ed .cm-line{padding:0 14px}
@@ -262,6 +274,7 @@ button:disabled{opacity:.6;cursor:wait}
   <symbol id="i-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></symbol>
   <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
   <symbol id="i-menu" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></symbol>
   <symbol id="i-tasks" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m8 12 3 3 5-6"/></symbol>
@@ -308,14 +321,18 @@ button:disabled{opacity:.6;cursor:wait}
     <span class="sep" aria-hidden="true"></span>
     <button id="ol-btn" class="ico" title="Outline" aria-label="Outline"><svg class="ic" aria-hidden="true"><use href="#i-outline"/></svg></button>
     <button id="switch" title="Quick switcher (Ctrl/Cmd+O)"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg><span class="lbl">Find</span></button>
-    <button id="cmd" class="ico" title="Commands (Ctrl/Cmd+P)" aria-label="Commands"><svg class="ic" aria-hidden="true"><use href="#i-more"/></svg></button>
-    <span class="sep" aria-hidden="true"></span>
-    <button id="sync" title="Sync (Ctrl/Cmd+S)"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg><span class="lbl">Sync</span></button>
-    <button id="hist" class="ico" title="Note history" aria-label="Note history"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg></button>
-    <span class="sep" aria-hidden="true"></span>
-    <button id="del" class="ico" title="Move note to trash" aria-label="Move note to trash"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg></button>
-    <button id="cfg" class="ico" title="Settings" aria-label="Settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg></button>
-    <button id="lock" title="Lock Vault"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><span class="lbl">Lock</span></button>
+    <div id="gear-wrap">
+      <button id="gear" class="ico" title="Settings and more" aria-label="Settings and more" aria-haspopup="menu" aria-expanded="false" aria-controls="gear-menu"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg></button>
+      <div id="gear-menu" role="menu" aria-label="Settings and more" hidden>
+        <button id="sync" role="menuitem" title="Sync (Ctrl/Cmd+S)"><svg class="ic" aria-hidden="true"><use href="#i-sync"/></svg><span>Sync now</span><kbd>Ctrl+S</kbd></button>
+        <button id="hist" role="menuitem" title="Note history"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg><span>Note history</span></button>
+        <button id="cmd" role="menuitem" title="Commands (Ctrl/Cmd+P)"><svg class="ic" aria-hidden="true"><use href="#i-more"/></svg><span>All commands</span><kbd>Ctrl+P</kbd></button>
+        <button id="cfg" role="menuitem" title="Sync settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><span>Sync settings</span></button>
+        <hr>
+        <button id="del" role="menuitem" class="danger" title="Move note to trash"><svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg><span>Move note to trash</span></button>
+        <button id="lock" role="menuitem" title="Lock Vault"><svg class="ic" aria-hidden="true"><use href="#i-lock"/></svg><span>Lock Vault</span></button>
+      </div>
+    </div>
   </div>
   <div id="panes">
     <div id="ed"></div>

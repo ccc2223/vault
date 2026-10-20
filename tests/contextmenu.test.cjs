@@ -177,3 +177,38 @@ test('insert table: hovering the grid picks the size and a click inserts an empt
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+
+test('the gear menu holds rarely used actions; the toolbar fits on one row on a phone', async () => {
+  const { context, page, errors } = await unlocked({ hasTouch: true, isMobile: true, viewport: { width: 375, height: 700 } });
+  try {
+    const visible = await page.locator('#bar > button:visible, #bar > div > button:visible').evaluateAll(els => els.map(e => e.id));
+    assert.deepEqual(visible, ['menu', 'tbl', 'img', 'ol-btn', 'switch', 'gear']);
+    const tops = await page.locator('#bar button:visible').evaluateAll(els => new Set(els.map(e => Math.round(e.getBoundingClientRect().top))).size);
+    assert.equal(tops, 1, 'one row of buttons');
+
+    await page.locator('#gear').tap();
+    assert.equal(await page.locator('#gear').getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(await page.locator('#gear-menu button span').allTextContents(),
+      ['Sync now', 'Note history', 'All commands', 'Sync settings', 'Move note to trash', 'Lock Vault']);
+    const m = await page.locator('#gear-menu').boundingBox();
+    assert.ok(m.x >= 0 && m.x + m.width <= 375, 'menu stays on screen');
+    // Tapping outside closes it; picking an item closes it and runs the action.
+    await page.touchscreen.tap(150, 500);
+    assert.equal(await page.locator('#gear-menu').isHidden(), true);
+    await page.locator('#gear').tap(); await page.locator('#hist').tap();
+    assert.equal(await page.locator('#gear-menu').isHidden(), true);
+    await page.locator('#dlg-hist[open]').waitFor();
+    await page.locator('#h-close').tap();
+
+    // Escape closes it and returns focus to the gear; note actions are off without an open note.
+    await page.locator('#gear').click();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#gear-menu').isHidden(), true);
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'gear');
+    await page.evaluate(() => { cur = null; });
+    await page.locator('#gear').click();
+    assert.equal(await page.locator('#hist').isDisabled(), true);
+    assert.equal(await page.locator('#del').isDisabled(), true);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

@@ -1348,6 +1348,34 @@ $('#cmd').onclick = () => openCommands();
 $('#sync').onclick = sync;
 $('#switch').onclick = openSwitcher;
 $('#menu').onclick = () => document.body.classList.toggle('drawer');
+{
+  // Gear menu for rarely used actions. Each item keeps its own click handler; picking one closes the menu first.
+  const gear = $('#gear'), box = $('#gear-menu'), items = () => [...box.querySelectorAll('button:not(:disabled)')];
+  for (const k of box.querySelectorAll('kbd')) k.textContent = k.textContent.replace('Ctrl', MOD);
+  const close = (refocus) => {
+    if (box.hidden) return;
+    box.hidden = true; gear.setAttribute('aria-expanded', 'false');
+    if (refocus) gear.focus();
+  };
+  // Only a keyboard opening moves focus into the menu, so a tap doesn't show the first item as highlighted.
+  const open = (keyboard) => {
+    $('#hist').disabled = $('#del').disabled = !cur;
+    box.hidden = false; gear.setAttribute('aria-expanded', 'true');
+    if (keyboard) items()[0]?.focus({ preventScroll: true });
+  };
+  gear.onclick = e => box.hidden ? open(e.detail === 0) : close(true);
+  box.addEventListener('click', e => { if (e.target.closest('button')) close(false); }, true);
+  document.addEventListener('pointerdown', e => { if (!e.target.closest('#gear-wrap')) close(false); }, true);
+  $('#gear-wrap').addEventListener('keydown', e => {
+    if (box.hidden) return;
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); return; }
+    if (e.key === 'Tab') { close(false); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault();
+    const rows = items(), i = rows.indexOf(document.activeElement);
+    rows[(i + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length]?.focus();
+  });
+}
 $('#back').onclick = () => document.body.classList.remove('drawer');
 document.addEventListener('keydown', e => {
   if (!Auth.active) return;
@@ -1386,7 +1414,7 @@ Your notes are plain markdown files, stored in this browser and synced to your o
 - Use \`folder/name\` when creating a note to put it in a folder
 - **Tasks** in the sidebar collects open \`- [ ]\` items from every note
 - Add #tags anywhere; click one, or pick it under Tags in the sidebar, to see every note with it
-- Set up sync with the ⚙ button
+- Set up sync from the ⚙ menu (Sync settings)
 
 - [ ] Try a task item
 `;
