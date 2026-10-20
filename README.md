@@ -7,7 +7,7 @@ A personal, local-first Markdown notes app with wikilinks, backlinks, search and
 - Vault starts locked on every open or reload. Enter your password before any note titles, content, search results or backlinks appear.
 - Notes, filenames, sync metadata and the last-opened note are encrypted together on this device with **AES-256-GCM**. The encryption key is derived using **PBKDF2-SHA-256, 600,000 iterations**, with a random device salt and a fresh nonce for every save.
 - Unlock keys and cloud sessions stay in memory. They are never saved in localStorage, IndexedDB or the service worker cache.
-- Vault locks after **one hour of inactivity**, including time in the background. It checks elapsed time when returning to a suspended tab. Click **Lock**, or **Settings → Sign out**, to lock immediately.
+- Vault locks after **one hour of inactivity**, including time in the background. It checks elapsed time when returning to a suspended tab. Choose **Lock Vault** in the gear menu (⚙), or **Sign out** in **Sync settings**, to lock immediately.
 - Locking saves pending edits as ciphertext, clears note text and credentials from the app, and cancels sync requests. A late response cannot reopen the vault.
 - One tab per browser profile can edit at a time. Locking or signing out coordinates across open tabs.
 - Saved notes can be unlocked offline with the local password. A new browser needs a successful cloud password login before it can download notes.
@@ -18,6 +18,8 @@ This protects device storage while Vault is locked. Your GitHub files remain ord
 
 - One Obsidian-style editor with live preview: notes look rendered, and Markdown symbols only show where you're editing. Click links to open them and task boxes to tick them. Ctrl/Cmd+E switches to the plain Markdown source and back
 - Tasks: tick `- [ ]` boxes in a note, or open **Tasks** in the sidebar to see the open tasks from every note in the space, tick them there, or click one to jump to it
+- Toolbar: **Table**, **Image** and **Code** buttons insert those blocks; the outline (≡) and **Find** (quick switcher) buttons sit beside them. Everything else is in the gear menu (⚙), the same on phone and desktop: **Sync now**, **Note history**, **All commands**, **Sync settings**, **Move note to trash** and **Lock Vault**
+- Right-click menu: right-click (or long-press on a touch screen) a table cell for row and column actions, or a folder in the sidebar for **New note in this folder** and **Expand/Collapse**. Other places (notes, images, links, the editor) show a placeholder menu for now. Inputs, dialogs and Shift+right-click keep the browser's own menu
 - Tables edit cell by cell like Obsidian: click a cell to edit it, Tab and Enter move between cells and add rows, the + buttons add rows and columns, right-click a cell to insert, delete or align rows and columns, and Escape, arrow down from the last row, or a click or tap below the table leaves it
 - Code blocks show their language and a Copy button, are highlighted for common languages (```js, ```python, ```bash, ```sql and more), and stay editable in place
 - `[[Wikilinks]]`, `[[Note|alias]]`, autocomplete and click-to-create
@@ -71,7 +73,7 @@ No Worker or Cloudflare changes are needed. A device still running an older Vaul
 
 ### App
 
-Host this repository with GitHub Pages (`main`, root), or another static HTTPS host. Include `index.html`, `app.js`, `editor.js`, `contextmenu.js`, `auth.js`, `secure-store.js`, `vendor/`, `manifest.webmanifest`, `icon.svg` and `sw.js`. There is no deployment build step; bundled libraries are committed. The app requires Web Crypto, IndexedDB and Web Locks in a current browser.
+Host this repository with GitHub Pages (`main`, root), or another static HTTPS host. Include `index.html`, `app.js`, `editor.js`, `contextmenu.js`, `tablepicker.js`, `auth.js`, `secure-store.js`, `vendor/`, `manifest.webmanifest`, `icon.svg` and `sw.js`. There is no deployment build step; bundled libraries are committed. The app requires Web Crypto, IndexedDB and Web Locks in a current browser.
 
 ### Private notes repo
 
@@ -113,7 +115,7 @@ If saving fails during locking, notes disappear from the screen and sync credent
 
 1. First update `PASSWORD` in Cloudflare and deploy.
 2. On each previously used device, unlock with its **old local password**. Local unlocking still works even when the server rejects the old password.
-3. Open **Settings → Update local password**. Enter the old local password and the new Cloudflare password.
+3. Open **Sync settings → Update local password** from the gear menu. Enter the old local password and the new Cloudflare password.
 4. Vault verifies the new cloud password and the old local password, saves pending edits, then verifies and atomically commits the re-encrypted notes.
 5. Future unlocks on that device use the new password. Repeat on every device with existing local data.
 
@@ -121,7 +123,7 @@ A failed change keeps the existing encrypted vault. Changing a server password c
 
 ## Sync
 
-Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. Settings lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
+Pull then push on opening, on Ctrl/Cmd+S, about 15 seconds after edits, and on returning to an unlocked tab. **Sync settings** (gear menu) lets you sign in again after session expiry. Direct-token sign-in was removed so every device uses the password flow.
 
 If both sides changed a note, the local text is kept and each remote conflict is saved under a unique conflict filename. An open note you haven't edited updates in place when newer text is pulled. Renames and deletes propagate, except that deleting (or renaming away from) a note that was edited on another device since your last sync restores the remote edit instead of discarding it. Notes download a few at a time and are saved locally in one encrypted write per sync. Each changed note or image produces one GitHub commit; other attachment types (PDFs, audio) are not synced yet. Repository settings should continue pointing to the same notes repo and branch when reusing a device cache.
 
@@ -134,6 +136,6 @@ npx playwright install chromium
 npm test
 ```
 
-Browser regression tests use Chromium, real IndexedDB/Web Crypto, and a mock sync server. Set `CHROMIUM_PATH` to a system Chromium executable if needed. Tests cover authenticated migration, encrypted storage, offline reload, wrong passwords, sign-out, reload locking, one-hour inactivity, tab coordination, interrupted writes, late responses and password rotation. Worker tests cover session duration, old/tampered/expired sessions, revocation, origins and proxy restrictions. No real notes or credentials are used.
+Browser regression tests use Chromium, real IndexedDB/Web Crypto, and a mock sync server. Set `CHROMIUM_PATH` to a system Chromium executable if needed. Tests cover the right-click menu, the service worker cache list, authenticated migration, encrypted storage, offline reload, wrong passwords, sign-out, reload locking, one-hour inactivity, tab coordination, interrupted writes, late responses and password rotation. Worker tests cover session duration, the `LIMITS` login rate limit, old/tampered/expired sessions, revocation, origins and proxy restrictions. No real notes or credentials are used.
 
 When changing app assets, bump the cache version in `sw.js`; its atomic install caches only the public app shell. Vendored library versions and licenses are recorded in `package.json`, `package-lock.json` and `vendor/`. `npm run vendor` also bundles the CodeMirror editor (`scripts/codemirror.mjs`) into `vendor/codemirror.min.js`.
