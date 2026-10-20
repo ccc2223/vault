@@ -53,6 +53,7 @@ No Worker or Cloudflare changes are needed. A device still running an older Vaul
 
 ## Images
 
+- Clicking an image link opens it in a viewer inside Vault; Escape or a click closes it. Images never open in a separate tab, so scripts inside an SVG can't run. SVGs you add on this device are also stripped of scripts, event handlers and other active content before they are saved.
 - Paste or drop an image into the editor, or use 🖼 (on phones it can open the camera). Vault saves it to `attachments/` in the current space and inserts `![[name.png]]`. Pasted images are named like Obsidian's, `Pasted image 20261017125801.png`.
 - Photos are scaled down to 2000px on the longest side. Large or scaled images are re-encoded: JPEG for photos, WebP for PNG/WebP (which may have transparency). GIF and SVG are kept as they are. The limit is 20 MB per image.
 - Embeds resolve relative to the note, then the space root, then by file name, so moved notes keep their images. Type `![[` to autocomplete image names.
@@ -90,9 +91,11 @@ Host this repository with GitHub Pages (`main`, root), or another static HTTPS h
 | `REPO` | Text | `ccc2223/vault-files` (or your private notes repo) |
 | `ALLOWED_ORIGIN` | Text | `https://ccc2223.github.io` (origin only, without `/vault/`) |
 | `SESSION_HOURS` | Text, optional | Default and maximum `8`; smaller positive values are allowed |
+| `SESSION_SECRET` | Secret, optional | Any random string. Change it to sign out every device without changing `PASSWORD` |
 
-4. Save/deploy the settings. Open Vault and enter the Worker's HTTPS URL and password.
-5. Optionally set `SYNC_URL` in `app.js` so new devices only need the password. The URL is public; never put secrets in app source.
+4. Recommended: limit password guessing. Under **Storage & Databases → Workers KV**, create a namespace (for example `vault-login-limits`). Then under the Worker's **Settings → Bindings**, add a **KV namespace** binding named `LIMITS` pointing to it. With it, the Worker answers 429 after 10 wrong passwords from one IP in 15 minutes, or 100 wrong passwords in an hour from anywhere. Local unlocking keeps working while sign-in is limited. Without the binding, wrong passwords are only slowed by one second.
+5. Save/deploy the settings. Open Vault and enter the Worker's HTTPS URL and password.
+6. Set `SYNC_URL` in `app.js` so new devices only need the password, and put the same URL in the `connect-src` list of the Content-Security-Policy in `index.html`. The policy blocks connections to any other server, so a Worker URL that isn't listed there can't be used. The URL is public; never put secrets in app source.
 
 The Worker keeps the GitHub token server-side. Sessions expire within **eight hours** and the app discards them on lock/close. Old `SESSION_DAYS` settings are ignored; remove that variable when upgrading. Updating to this Worker version invalidates old sessions. Changing `PASSWORD`, `GH_TOKEN` or `REPO` also invalidates sessions. Sessions are stateless: sign-out clears this browser's credentials, while a separately copied token remains valid until expiry or a server-secret change.
 

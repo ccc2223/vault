@@ -7,6 +7,8 @@
 //   REPO            text    e.g. ccc2223/vault-files
 //   ALLOWED_ORIGIN  text    e.g. https://ccc2223.github.io   (comma-separate several)
 //   SESSION_HOURS   text    optional, default and maximum 8
+//   SESSION_SECRET  secret  optional; change it to sign out every device without changing PASSWORD
+//   LIMITS          KV      optional binding; limits wrong passwords to 10 per IP per 15 minutes and 100 per hour
 
 const API = 'https://api.github.com';
 const enc = new TextEncoder();
@@ -16,7 +18,8 @@ const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
 
 async function hmac(env, msg) {
   // Key depends on the token and password: changing either signs out every device.
-  const key = await crypto.subtle.importKey('raw', enc.encode('vault-session-v3\n' + env.REPO + '\n' + env.GH_TOKEN + '\n' + env.PASSWORD),
+  const secret = env.SESSION_SECRET ? '\n' + env.SESSION_SECRET : '';
+  const key = await crypto.subtle.importKey('raw', enc.encode('vault-session-v3\n' + env.REPO + '\n' + env.GH_TOKEN + '\n' + env.PASSWORD + secret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   return b64url(await crypto.subtle.sign('HMAC', key, enc.encode(msg)));
 }
@@ -42,6 +45,33 @@ async function checkSession(env, s) {
   return safeEqual(m[2], await hmac(env, m[1]));
 }
 
+// Wrong-password counters in Workers KV: one window per IP and one for everyone. KV is eventually consistent, so the
+// limits are approximate. Without the LIMITS binding, or if KV fails, logins are not limited beyond the 1 s delay.
+const IP_LIMIT = 10, IP_WINDOW = 15 * 60000, ALL_LIMIT = 100, ALL_WINDOW = 3600000;
+function limitKeys(req) {
+  const now = Date.now(), ip = req.headers.get('CF-Connecting-IP') || 'unknown';
+  return [
+    { key: 'login:ip:' + ip + ':' + Math.floor(now / IP_WINDOW), limit: IP_LIMIT, ttl: 2 * IP_WINDOW / 1000 },
+    { key: 'login:all:' + Math.floor(now / ALL_WINDOW), limit: ALL_LIMIT, ttl: 2 * ALL_WINDOW / 1000 }
+  ];
+}
+async function limited(env, keys) {
+  if (!env.LIMITS) return false;
+  try {
+    const counts = await Promise.all(keys.map(k => env.LIMITS.get(k.key)));
+    return keys.some((k, i) => Number(counts[i]) >= k.limit);
+  } catch { return false; }
+}
+async function recordFailure(env, keys) {
+  if (!env.LIMITS) return;
+  try {
+    await Promise.all(keys.map(async k => {
+      const n = Number(await env.LIMITS.get(k.key)) || 0;
+      await env.LIMITS.put(k.key, String(n + 1), { expirationTtl: k.ttl });
+    }));
+  } catch {}
+}
+
 export default {
   async fetch(req, env) {
     const origin = req.headers.get('Origin') || '';
@@ -65,9 +95,16 @@ export default {
     const url = new URL(req.url);
 
     if (url.pathname === '/login' && req.method === 'POST') {
+      const keys = limitKeys(req);
+      if (await limited(env, keys)) {
+        return new Response(JSON.stringify({ message: 'Too many wrong passwords. Try again later.' }), {
+          status: 429, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '900' }
+        });
+      }
       let body;
       try { body = await req.json(); } catch { return json({ message: 'Bad request' }, 400); }
       if (typeof body?.password !== 'string' || !(await safeEqual(body.password, env.PASSWORD))) {
+        await recordFailure(env, keys);
         await new Promise(r => setTimeout(r, 1000));
         return json({ message: 'Wrong password' }, 401);
       }

@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Scripts only from this site; network only to this site and the sync Worker. Remote images stay allowed. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; connect-src 'self' https://vault-sync-01.chriscleven.workers.dev; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Vault</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -171,6 +173,8 @@ dialog label{display:block;margin:10px 0 4px;font-size:13px;color:var(--mute)}
 dialog input{width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;background:var(--bg2)}
 dialog .row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:14px}
 dialog .row button{min-width:84px}
+#dlg-img{width:auto;max-width:96vw;max-height:94vh;padding:8px}
+#dlg-img img{display:block;max-width:calc(96vw - 18px);max-height:calc(94vh - 18px);margin:auto}
 dialog p.hint{font-size:12px;color:var(--mute);margin:8px 0 0}
 #qs-list{margin-top:8px;max-height:50vh;overflow:auto}
 #qs-list div{padding:7px 9px;border-radius:6px;cursor:pointer}
@@ -393,6 +397,8 @@ button:disabled{opacity:.6;cursor:wait}
   <input id="cmd-in" placeholder="Type a command…" autocomplete="off" aria-label="Command">
   <div id="cmd-list"></div>
 </dialog>
+
+<dialog id="dlg-img" aria-label="Image"><img alt=""></dialog>
 
 <dialog id="dlg-qs">
   <input id="qs-in" placeholder="Jump to note… (Enter to open or create)" autocomplete="off">

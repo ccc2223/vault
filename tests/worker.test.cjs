@@ -62,3 +62,44 @@ test('Worker checks origins, validates passwords, and restricts authenticated pr
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+test('Worker limits wrong passwords per IP and overall when the LIMITS KV binding is present', async () => {
+  const w = await worker();
+  const kv = new Map(), LIMITS = { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); } };
+  const config = { ...env, LIMITS };
+  const attempt = (password, ip = '203.0.113.7') => w.fetch(req('/login', 'POST', {
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip }, body: JSON.stringify({ password })
+  }), config);
+  const originalTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => originalTimeout(fn, 0);
+  try {
+    for (let i = 0; i < 10; i++) assert.equal((await attempt('wrong')).status, 401);
+    const blocked = await attempt(env.PASSWORD);
+    assert.equal(blocked.status, 429);
+    assert.equal(blocked.headers.get('Retry-After'), '900');
+    assert.equal(blocked.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN);
+    assert.equal((await attempt(env.PASSWORD, '198.51.100.2')).status, 200, 'other IPs still sign in');
+    for (let i = 0; i < 90; i++) await attempt('wrong', '198.51.100.' + (10 + i % 9));
+    assert.equal((await attempt(env.PASSWORD, '192.0.2.1')).status, 429, 'overall cap reached');
+    // A failing KV store never blocks sign-in.
+    const broken = { get: async () => { throw new Error('KV down'); }, put: async () => { throw new Error('KV down'); } };
+    const ok = await w.fetch(req('/login', 'POST', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: env.PASSWORD }) }), { ...env, LIMITS: broken });
+    assert.equal(ok.status, 200);
+  } finally { globalThis.setTimeout = originalTimeout; }
+});
+
+test('Changing SESSION_SECRET signs every device out; leaving it unset keeps existing sessions', async () => {
+  const w = await worker();
+  const check = (session, config) => w.fetch(req('/gh/git/trees/main', 'GET', { headers: { Authorization: 'Bearer ' + session } }), config)
+    .then(r => r.status);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+  try {
+    const plain = (await login()).data.session;
+    assert.equal(await check(plain, env), 200);
+    assert.equal(await check(plain, { ...env, SESSION_SECRET: 'one' }), 401);
+    const withSecret = (await login({ ...env, SESSION_SECRET: 'one' })).data.session;
+    assert.equal(await check(withSecret, { ...env, SESSION_SECRET: 'one' }), 200);
+    assert.equal(await check(withSecret, { ...env, SESSION_SECRET: 'two' }), 401);
+  } finally { globalThis.fetch = originalFetch; }
+});
