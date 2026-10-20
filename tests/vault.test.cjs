@@ -17,7 +17,9 @@ before(async () => {
     if (!file.startsWith(path.join(__dirname, '..'))) { res.writeHead(403).end(); return; }
     try {
       res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.html') ? 'text/html' : 'text/plain');
-      res.end(fs.readFileSync(file));
+      // The app's CSP only allows the real sync Worker; let the page reach the mock server instead.
+      const body = fs.readFileSync(file);
+      res.end(name === '/' || name === '/index.html' ? body.toString().replace('https://vault-sync-01.chriscleven.workers.dev;', url + ';') : body);
     } catch { res.writeHead(404).end(); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -1228,6 +1230,49 @@ test('the Tasks view collects open tasks across notes, ticks them in place and j
     await f.page.locator('#tk-list label', { hasText: 'milk' }).locator('span').click();
     await f.page.waitForFunction(() => cur === 'Shop.md' && editor.view.state.doc.lineAt(editor.pos).text === '- [ ] milk');
     assert.equal(await f.page.locator('#dlg-tasks[open]').count(), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('attachments open in an in-app viewer, SVG scripts never run, and added SVGs are cleaned', async () => {
+  const f = await fixture();
+  try {
+    const evil = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" onload="localStorage.setItem(\'pwned\', 1)">' +
+      '<script>localStorage.setItem("pwned", 2)</script><rect width="4" height="4" fill="red"/></svg>';
+    f.remote.set('attachments/evil.svg', { sha: 'evil-1', b64: Buffer.from(evil).toString('base64') });
+    f.remote.set('Pics.md', { sha: 'pics-1', content: '[[evil.svg]]' });
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(() => openNote('Pics.md'));
+    const pages = [];
+    f.context.on('page', page => pages.push(page));
+    await f.page.locator('#ed .wikilink[data-att]').click();
+    await f.page.waitForFunction(() => document.getElementById('dlg-img').open && /^blob:/.test(document.querySelector('#dlg-img img').src));
+    await f.page.waitForFunction(() => document.querySelector('#dlg-img img').complete);
+    assert.equal(pages.length, 0, 'no new tab opens');
+    assert.equal(await f.page.evaluate(() => localStorage.getItem('pwned')), null);
+    await f.page.keyboard.press('Escape');
+    await f.page.waitForFunction(() => !document.getElementById('dlg-img').open && !document.querySelector('#dlg-img img').hasAttribute('src'));
+
+    // An SVG added on this device is stored without scripts or event handlers.
+    await f.page.evaluate(async evil => {
+      const dt = new DataTransfer(); dt.items.add(new File([evil], 'drawing.svg', { type: 'image/svg+xml' }));
+      editor.focus(true);
+      editor.view.contentDOM.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, evil);
+    await f.page.waitForFunction(() => /Added 1 image/.test(document.getElementById('status').textContent));
+    const stored = await f.page.evaluate(async () => {
+      const file = [...files.values()].find(x => x.path !== 'attachments/evil.svg');
+      return new TextDecoder().decode(await Auth.store.getFile(file.id));
+    });
+    assert.match(stored, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    assert.match(stored, /<rect /);
+    assert.doesNotMatch(stored, /script|onload/i);
+
+    // The policy blocks connections to anywhere but the app and the sync server.
+    const csp = await f.page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute('content');
+    assert.match(csp, /script-src 'self';/);
+    assert.match(csp, /object-src 'none'/);
+    assert.equal(await f.page.evaluate(() => fetch('https://elsewhere.example/').then(() => 'sent', () => 'blocked')), 'blocked');
     assert.deepEqual(f.errors, []);
   } finally { await f.context.close(); }
 });

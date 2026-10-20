@@ -488,7 +488,16 @@ async function followLink(target, heading) {
   if (p !== cur) await openNote(p);
   if (heading && !gotoHeading(heading)) setStatus(`No heading "${heading}" in ${baseName(p)}`, true);
 }
-async function openAttachment(path) { const f = files.get(path); if (f) window.open(await attachmentURL(f), '_blank', 'noopener'); }
+// Attachments open in an in-app viewer. A new tab would run scripts inside an SVG with Vault's origin; an <img> never does.
+async function openAttachment(path) {
+  const f = files.get(path); if (!f) return;
+  const epoch = Auth.epoch, u = await attachmentURL(f);
+  if (epoch !== Auth.epoch) return;
+  const img = $('#dlg-img img'); img.src = u; img.alt = fileName(f.path);
+  $('#dlg-img').showModal();
+}
+$('#dlg-img').addEventListener('click', () => $('#dlg-img').close());
+$('#dlg-img').addEventListener('close', () => { $('#dlg-img img').removeAttribute('src'); });
 const editor = LiveEditor.create($('#ed'), {
   change(text) { const n = notes.get(cur); if (!n) return; beforeEdit(n); n.content = text; touch(n); },
   cursor(typed) { if (typed) updateSug(); else hideSug(); scheduleOutline(); },
@@ -562,7 +571,8 @@ async function addImages(list, pasted) {
     const ext = EXT[img.type];
     if (!ext) { problems.push(`"${file.name}" isn't a supported image format`); continue; }
     if (img.size > MAX_BYTES) { problems.push(`"${file.name}" is larger than 20 MB`); continue; }
-    const bytes = new Uint8Array(await img.arrayBuffer());
+    const bytes = img.type === 'image/svg+xml' ? cleanSVG(await img.text()) : new Uint8Array(await img.arrayBuffer());
+    if (!bytes) { problems.push(`"${file.name}" isn't a valid SVG image`); continue; }
     const id = await Auth.store.putFile(bytes); Auth.ensure(epoch);
     const path = attachmentPath(pasted ? 'Pasted image ' + stamp() : file.name, ext, folder);
     files.set(path, { path, id, size: bytes.length, mtime: Date.now(), sha: null, dirty: true });
@@ -576,6 +586,12 @@ async function addImages(list, pasted) {
     scheduleSync(15000);
   }
   setStatus(problems.length ? 'Could not add ' + problems.join('; ') + '.' : `Added ${links.length} image${links.length > 1 ? 's' : ''}`, problems.length > 0);
+}
+// Strip scripts, event handlers and external references from SVGs added on this device.
+function cleanSVG(text) {
+  const clean = DOMPurify.sanitize(text.replace(/^\uFEFF?\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*(<!DOCTYPE[^>]*>\s*)?/i, ''), { USE_PROFILES: { svg: true, svgFilters: true }, ADD_TAGS: ['use'] }).trim();
+  if (!/^<svg[\s>]/.test(clean)) return null;
+  return new TextEncoder().encode(/^<svg[^>]*\sxmlns=/.test(clean) ? clean : clean.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"'));
 }
 const imagesIn = list => [...(list || [])].filter(f => f.type.startsWith('image/'));
 function tryAdd(list, pasted) {

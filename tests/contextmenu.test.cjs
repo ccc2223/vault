@@ -16,7 +16,9 @@ before(async () => {
     if (!file.startsWith(root)) { res.writeHead(403).end(); return; }
     try {
       res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.html') ? 'text/html' : 'text/plain');
-      res.end(fs.readFileSync(file));
+      // The app's CSP only allows the real sync Worker; let the page reach the mock server instead.
+      const body = fs.readFileSync(file);
+      res.end(name === '/' || name === '/index.html' ? body.toString().replace('https://vault-sync-01.chriscleven.workers.dev;', url + ';') : body);
     } catch { res.writeHead(404).end(); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
