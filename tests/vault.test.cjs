@@ -137,7 +137,7 @@ test('sign out clears UI, keys and credentials; offline unlock still needs the l
   const f = await fixture();
   try {
     await unlock(f.page); await settled(f.page);
-    await f.page.locator('#cfg').click(); await f.page.locator('#c-clear').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#cfg').click(); await f.page.locator('#c-clear').click(); await locked(f.page);
     f.state.offline = true;
     await unlock(f.page, 'incorrect');
     assert.equal(await f.page.evaluate(() => Auth.active), false);
@@ -205,7 +205,7 @@ test('late sync response cannot restore notes after locking', async () => {
     let release; f.state.delay = new Promise(resolve => { release = resolve; });
     await f.page.evaluate(() => { void App.sync(); });
     while (!f.state.started) await new Promise(resolve => setTimeout(resolve, 10));
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     release(); f.state.delay = null;
     await f.page.waitForTimeout(100);
     await locked(f.page);
@@ -225,7 +225,7 @@ test('password rotation preserves notes and rejects the previous local password'
     assert.equal((await raw(f.page)).sealed.salt, before.sealed.salt);
     assert.equal(await editorText(f.page), secret);
     await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await unlock(f.page, password);
     assert.equal(await f.page.evaluate(() => Auth.active), false);
     await unlock(f.page, f.state.password); await settled(f.page);
@@ -240,7 +240,7 @@ test('failed lock save hides notes and preserves unsaved text for a successful r
     await unlock(f.page); await settled(f.page);
     await f.page.locator('#ed .cm-content').fill('Unsaved recovery text');
     await f.page.evaluate(() => { window.realWrite = Auth.store.write; Auth.store.write = async () => { throw new Error('Disk full'); }; });
-    await f.page.locator('#lock').click();
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click();
     await f.page.waitForFunction(() => Auth.lockFailed && !Auth.locking);
     assert.equal(await editorText(f.page), '');
     assert.equal(await f.page.locator('#unlock-submit').isDisabled(), true);
@@ -272,7 +272,7 @@ test('service worker supports offline reload and never caches sync or authentica
     await unlock(f.page); await settled(f.page);
     await f.page.evaluate(async () => { await navigator.serviceWorker.ready; });
     await f.page.waitForFunction(() => !!navigator.serviceWorker.controller);
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await f.context.setOffline(true);
     await f.page.reload();
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
@@ -362,7 +362,7 @@ test('tampered ciphertext cannot be unlocked or overwritten', async () => {
   const f = await fixture();
   try {
     await unlock(f.page); await settled(f.page);
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await f.page.evaluate(async () => {
       const record = await Auth.store.read();
       record.ciphertext = (record.ciphertext[0] === 'A' ? 'B' : 'A') + record.ciphertext.slice(1);
@@ -459,7 +459,7 @@ test('first sync persists pulled notes in one encrypted write, and a failed pull
     assert.equal(await f.page.evaluate(() => notes.has('n/150.md')), false);
     const pulled = await f.page.evaluate(() => live().filter(n => n.path.startsWith('n/')).length);
     assert.ok(pulled > 0);
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
     assert.equal(await f.page.evaluate(() => live().filter(n => n.path.startsWith('n/')).length), pulled);
@@ -596,7 +596,7 @@ test('spaces keep notes, links and search separate, store notes in their folder,
 
     await f.page.evaluate(() => switchSpace('Work'));
     assert.equal(await f.page.evaluate(() => cur), 'Work/Projects/Plan.md');
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
     assert.equal(await f.page.locator('#space-name').textContent(), 'Work');
@@ -709,7 +709,7 @@ test('pasted images shrink, stay encrypted on the device, sync to attachments/ a
     const puts = f.state.calls.filter(c => c.method === 'PUT').map(c => decodeURIComponent(c.pathname));
     assert.deepEqual(puts, ['/gh/contents/' + name, '/gh/contents/Secret draft.md'], 'images upload before the note that embeds them');
 
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     assert.equal(await f.page.evaluate(() => urls.size + files.size), 0);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
@@ -718,7 +718,7 @@ test('pasted images shrink, stay encrypted on the device, sync to attachments/ a
     // Changing the password re-encrypts images along with the notes.
     f.state.offline = false; f.state.password = 'new longer password for test';
     await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await unlock(f.page, f.state.password); await settled(f.page);
     await shown(f.page, 1);
     assert.deepEqual(f.errors, []);
@@ -953,7 +953,7 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
     assert.deepEqual(await versions(), ['edit', 'sync']);
 
     // Pick the oldest version in the history and restore it; the replaced text is kept as a version too.
-    await f.page.locator('#hist').click();
+    await f.page.locator('#gear').click(); await f.page.locator('#hist').click();
     assert.equal(await f.page.locator('#h-list div[data-i]').count(), 2);
     await f.page.locator('#h-list div[data-i="1"]').click();
     await f.page.waitForFunction(s => document.getElementById('h-view').textContent === s, secret);
@@ -964,7 +964,7 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
 
     // Deleting moves the note to the trash, where it can be restored.
     await f.page.evaluate(() => { window.confirm = () => true; });
-    await f.page.locator('#del').click();
+    await f.page.locator('#gear').click(); await f.page.locator('#del').click();
     await f.page.waitForFunction(() => cur !== 'Secret draft.md'); await settled(f.page);
     assert.equal(await f.page.locator('#trash-n').textContent(), '1');
     await f.page.locator('#trash').click();
@@ -997,12 +997,12 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
     const texts = () => f.page.evaluate(() => Promise.all(Auth.store.history.sort((a, b) => a.time - b.time).map(v => Auth.store.getVersion(v.id))));
     const before = await texts();
     assert.deepEqual(before.slice(0, 3), [secret, 'Second draft', 'From phone']);
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     f.state.password = 'new longer password for test';
     await unlock(f.page); await settled(f.page);
     assert.deepEqual(await texts(), before);
     await f.page.evaluate(async ({ old, next }) => Auth.changePassword(old, next), { old: password, next: f.state.password });
-    await f.page.locator('#lock').click(); await locked(f.page);
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await unlock(f.page, f.state.password); await settled(f.page);
     assert.deepEqual(await texts(), before);
 
@@ -1032,7 +1032,7 @@ test('the command palette lists every action, filters as you type, runs one and 
     assert.equal(await editorText(f.page), '- [ ] ' + secret + ' buy milk');
 
     // The toolbar button opens it too, with the last command first; Escape closes it.
-    await f.page.locator('#cmd').click();
+    await f.page.locator('#gear').click(); await f.page.locator('#cmd').click();
     assert.equal((await names())[0], 'Insert checkbox');
     await f.page.keyboard.type('sync settings');
     await f.page.locator('#cmd-list div[data-i]', { hasText: 'Sync settings' }).click();
