@@ -166,19 +166,19 @@ const LiveEditor = (() => {
         const wrap = document.createElement('span');
         wrap.className = 'cm-img cm-reveal' + (this.sel ? ' cm-picked' : '');
         if (!this.src) { wrap.append(missing(this.name)); return wrap; }
-        const img = Object.assign(document.createElement('img'), { className: 'att', alt: this.alt });
+        const img = Object.assign(document.createElement('img'), { className: 'att', alt: this.alt, referrerPolicy: 'no-referrer' });
         // Width and height both apply, so a resized image keeps the shape it was given.
         if (this.size) {
           img.width = +this.size[0]; img.style.width = this.size[0] + 'px';
           if (this.size[1]) { img.height = +this.size[1]; img.style.height = this.size[1] + 'px'; }
         }
         img.onload = () => view.requestMeasure();
-        if (this.src.url) img.src = this.src.url;
+        if (this.src.url) wrap.append(hooks.protectImage(img, this.src.url));
         else {
           img.dataset.att = this.src.path;
           hooks.imageURL(this.src.path).then(u => { img.src = u; }, () => img.replaceWith(missing(this.name)));
+          wrap.append(img);
         }
-        wrap.append(img);
         if (this.sel) for (const dir of ['e', 's', 'se']) {
           const h = Object.assign(document.createElement('span'), { className: 'cm-handle cm-handle-' + dir });
           h.addEventListener('pointerdown', e => resize(view, e, img, dir));
@@ -807,3 +807,4 @@ const LiveEditor = (() => {
   }
   return { create };
 })();
+

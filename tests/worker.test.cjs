@@ -1,11 +1,35 @@
-const { test } = require('node:test');
+const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { webcrypto } = require('node:crypto');
 const env = { GH_TOKEN: 'test-only-not-a-real-token', PASSWORD: 'test-only-password', REPO: 'example/private', ALLOWED_ORIGIN: 'https://example.github.io' };
 const origin = { Origin: env.ALLOWED_ORIGIN };
+// Persistent storage per object ID, with serialized transactions and a fresh class instance per request.
+function limiterNamespace() {
+  const objects = new Map();
+  return {
+    idFromName: name => name,
+    get(id) {
+      if (!objects.has(id)) {
+        const records = new Map(); let queue = Promise.resolve();
+        objects.set(id, { transaction(fn) {
+          const task = queue.then(() => fn({
+            get: async key => structuredClone(records.get(key)),
+            put: async (key, value) => records.set(key, structuredClone(value))
+          }));
+          queue = task.catch(() => {}); return task;
+        } });
+      }
+      return { async fetch() {
+        const { LoginLimiter } = await import('../worker.js');
+        return new LoginLimiter({ storage: objects.get(id) }).fetch();
+      } };
+    }
+  };
+}
+beforeEach(() => { env.LOGIN_LIMITER = limiterNamespace(); });
 async function worker() { return (await import('../worker.js')).default; }
 function req(path, method = 'GET', extra = {}) {
-  return new Request('https://worker.example' + path, { method, ...extra, headers: { ...origin, ...extra.headers } });
+  return new Request('https://worker.example' + path, { method, ...extra, headers: { ...origin, 'CF-Connecting-IP': '203.0.113.7', ...extra.headers } });
 }
 async function login(config = env) {
   const before = Date.now();
@@ -63,29 +87,70 @@ test('Worker checks origins, validates passwords, and restricts authenticated pr
   } finally { globalThis.fetch = originalFetch; }
 });
 
-test('Worker limits wrong passwords per IP and overall when the LIMITS KV binding is present', async () => {
+test('Worker atomically admits only ten concurrent attempts from one IP', async () => {
   const w = await worker();
-  const kv = new Map(), LIMITS = { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); } };
-  const config = { ...env, LIMITS };
-  const attempt = (password, ip = '203.0.113.7') => w.fetch(req('/login', 'POST', {
-    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip }, body: JSON.stringify({ password })
-  }), config);
   const originalTimeout = globalThis.setTimeout;
   globalThis.setTimeout = (fn) => originalTimeout(fn, 0);
   try {
-    for (let i = 0; i < 10; i++) assert.equal((await attempt('wrong')).status, 401);
-    const blocked = await attempt(env.PASSWORD);
-    assert.equal(blocked.status, 429);
-    assert.equal(blocked.headers.get('Retry-After'), '900');
+    const attempts = await Promise.all(Array.from({ length: 50 }, (_, i) =>
+      w.fetch(req('/login', 'POST', { headers: { 'X-Forwarded-For': '192.0.2.' + i }, body: JSON.stringify({ password: 'wrong' }) }), env)));
+    assert.equal(attempts.filter(r => r.status === 401).length, 10);
+    assert.equal(attempts.filter(r => r.status === 429).length, 40);
+    const blocked = await w.fetch(req('/login', 'POST', { body: '{invalid-json' }), env);
+    assert.equal(blocked.status, 429, 'admission happens before body parsing');
+    assert.ok(Number(blocked.headers.get('Retry-After')) > 0);
     assert.equal(blocked.headers.get('Access-Control-Allow-Origin'), env.ALLOWED_ORIGIN);
-    assert.equal((await attempt(env.PASSWORD, '198.51.100.2')).status, 200, 'other IPs still sign in');
-    for (let i = 0; i < 90; i++) await attempt('wrong', '198.51.100.' + (10 + i % 9));
-    assert.equal((await attempt(env.PASSWORD, '192.0.2.1')).status, 429, 'overall cap reached');
-    // A failing KV store never blocks sign-in.
-    const broken = { get: async () => { throw new Error('KV down'); }, put: async () => { throw new Error('KV down'); } };
-    const ok = await w.fetch(req('/login', 'POST', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: env.PASSWORD }) }), { ...env, LIMITS: broken });
-    assert.equal(ok.status, 200);
+    assert.equal(blocked.headers.get('Cache-Control'), 'no-store');
   } finally { globalThis.setTimeout = originalTimeout; }
+});
+
+test('failures from many IPs never exhaust another IP budget', async () => {
+  const w = await worker(), originalTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = fn => originalTimeout(fn, 0);
+  try {
+    for (let ip = 1; ip <= 10; ip++) for (let i = 0; i < 10; i++) {
+      const r = await w.fetch(req('/login', 'POST', { headers: { 'CF-Connecting-IP': '198.51.100.' + ip }, body: JSON.stringify({ password: 'wrong' }) }), env);
+      assert.equal(r.status, 401);
+    }
+    assert.equal((await login()).response.status, 200, 'correct password from a fresh IP still works after 100 failures');
+  } finally { globalThis.setTimeout = originalTimeout; }
+});
+
+test('successful and malformed attempts consume reservations; retry time and expiry are accurate', async () => {
+  const w = await worker(), originalNow = Date.now;
+  let now = originalNow(); Date.now = () => now;
+  try {
+    assert.equal((await w.fetch(req('/login', 'POST', { body: '{invalid-json' }), env)).status, 400);
+    for (let i = 0; i < 9; i++) assert.equal((await login()).response.status, 200);
+    now += 4500;
+    let r = (await login()).response;
+    assert.equal(r.status, 429); assert.equal(r.headers.get('Retry-After'), '896');
+    now += 15 * 60000 - 4500;
+    assert.equal((await login()).response.status, 200);
+  } finally { Date.now = originalNow; }
+});
+
+test('missing, broken or malformed protection fails closed, without breaking existing sessions', async () => {
+  const w = await worker();
+  const { data } = await login();
+  const stub = fetch => ({ idFromName: name => name, get: () => ({ fetch }) });
+  for (const binding of [undefined,
+    stub(async () => { throw new Error('Unavailable'); }),
+    stub(async () => new Response('Unavailable', { status: 503 })),
+    stub(async () => Response.json({})),
+    stub(async () => Response.json({ allowed: false, retryAfter: 0 }))]) {
+    const r = (await login({ ...env, LOGIN_LIMITER: binding })).response;
+    assert.equal(r.status, 503); assert.equal(r.headers.get('Retry-After'), '60');
+    assert.equal(r.headers.get('Cache-Control'), 'no-store');
+  }
+  const noIP = req('/login', 'POST', { body: JSON.stringify({ password: env.PASSWORD }) });
+  noIP.headers.delete('CF-Connecting-IP');
+  assert.equal((await w.fetch(noIP, env)).status, 503);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ tree: [] });
+  try {
+    assert.equal((await w.fetch(req('/gh/git/trees/main', 'GET', { headers: { Authorization: 'Bearer ' + data.session } }), { ...env, LOGIN_LIMITER: undefined })).status, 200);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test('Changing SESSION_SECRET signs every device out; leaving it unset keeps existing sessions', async () => {
@@ -103,3 +168,4 @@ test('Changing SESSION_SECRET signs every device out; leaving it unset keeps exi
     assert.equal(await check(withSecret, { ...env, SESSION_SECRET: 'two' }), 401);
   } finally { globalThis.fetch = originalFetch; }
 });
+
