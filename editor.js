@@ -228,8 +228,8 @@ const LiveEditor = (() => {
         add('cm-table-add-col', 'Add column', () => edit(view, wrap, m => { insertColumn(m, m.aligns.length); return [0, m.aligns.length - 1]; })),
         add('cm-table-add-row', 'Add row', () => edit(view, wrap, m => { insertRow(m, m.rows.length); return [m.rows.length - 1, 0]; })));
       wrap.append(box);
-      wrap.addEventListener('focusin', e => { const cell = e.target.closest('[data-r]'); if (cell) startCell(wrap, cell); });
-      wrap.addEventListener('focusout', e => { const cell = e.target.closest('[data-r]'); if (cell) showCell(cell, cellText(wrap, cell)); });
+      wrap.addEventListener('focusin', e => { if (e.target.closest('.remote-image')) return; const cell = e.target.closest('[data-r]'); if (cell) startCell(wrap, cell); });
+      wrap.addEventListener('focusout', e => { if (e.target.closest('.remote-image')) return; const cell = e.target.closest('[data-r]'); if (cell) showCell(cell, cellText(wrap, cell)); });
       wrap.addEventListener('mousedown', e => cellMouse(view, wrap, e));
       wrap.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); });
       wrap.addEventListener('input', e => { const cell = e.target.closest('[data-r]'); if (cell) commit(view, wrap, cell); });

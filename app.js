@@ -192,12 +192,12 @@ function protectImage(img, value) {
   }
   const epoch = Auth.epoch;
   const button = Object.assign(document.createElement('button'), {
-    type: 'button', className: 'remote-image', textContent: 'Load remote image',
+    type: 'button', contentEditable: 'false', className: 'remote-image', textContent: 'Load remote image',
     title: 'Loading shares your IP address with ' + url.hostname
   });
   if (img.alt) button.setAttribute('aria-label', 'Load remote image: ' + img.alt);
   // Do not select the image or enter a table cell instead of activating its privacy control.
-  button.addEventListener('mousedown', event => event.stopPropagation());
+  button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
   button.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
   button.addEventListener('click', event => {
     event.preventDefault(); event.stopPropagation();
@@ -1084,7 +1084,7 @@ async function encryptedSync(epoch) {
     if (e.kind === 'note') pulled.set(e.path, { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) });
     else { const id = await Auth.store.putFile(bytes); Auth.ensure(epoch); pulled.set(e.path, { id, size: bytes.length }); }
   });
-  let images = false;
+  let images = false, restored = 0;
   for (const e of base.manifest.entries) {
     const map = e.kind === 'note' ? notes : files, old = map.get(e.path), incoming = pulled.get(e.path);
     if (e.deleted) {
@@ -1105,6 +1105,7 @@ async function encryptedSync(epoch) {
       if (!old) notes.set(e.path, { path: e.path, content: text, sha: e.ref.revisionId, dirty: false, mtime: e.mtime });
       else if (old.deleted) {
         // A remote edit made after the local delete must survive.
+        restored++;
         Object.assign(old, { content: text, sha: e.ref.revisionId, deleted: false, dirty: false, mtime: e.mtime });
       } else if (!old.dirty) {
         if (old.content !== text) await keepVersion(e.path, old.content, 'sync');
@@ -1167,7 +1168,8 @@ async function encryptedSync(epoch) {
     showPulled(notes.get(cur)); if (images) editor.refresh();
   }
   renderSpace(); renderList(); renderBacklinks();
-  setStatus('Encrypted sync ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  setStatus('Encrypted sync ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+    (restored ? `; restored ${restored} deleted note${restored === 1 ? '' : 's'} changed on another device` : ''));
 }
 
 // Run fn over items with limited concurrency. On failure, stop taking new items and wait for the rest to settle.

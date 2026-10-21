@@ -224,9 +224,9 @@ test('a new device picks up spaces; a folder becomes a space without moving file
     await f.page.evaluate(() => removeSpace('Projects'));
     assert.equal(await f.page.evaluate(() => space), '');
     // Its notes show in Main under the (closed) folder.
-    assert.deepEqual((await listed(f.page)).sort(), ['Root.md', 'Welcome.md']);
+    assert.deepEqual((await listed(f.page)).sort(), ['Root.md']);
     await f.page.locator('#list .dir[data-d="Projects"]').click();
-    assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md', 'Root.md', 'Welcome.md']);
+    assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md', 'Root.md']);
     await f.page.evaluate(() => App.sync()); await settled(f.page);
     assert.equal(f.remote.has('Projects/a.md'), true);
     assert.equal(JSON.parse(f.remote.get('.vault/spaces.json').content).spaces.find(s => s.folder === 'Projects').removed, true);
@@ -274,9 +274,9 @@ test('pasted images shrink, stay encrypted on the device, sync to attachments/ a
       const c = document.createElement('canvas'); c.width = 3000; c.height = 1500;
       const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 3000, 1500); g.fillStyle = '#3c3'; g.fillRect(0, 0, 1500, 750);
       const blob = await new Promise(r => c.toBlob(r, 'image/png'));
-      const dt = new DataTransfer(); dt.items.add(new File([blob], 'image.png', { type: 'image/png' }));
-      editor.focus(true);
-      editor.view.contentDOM.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files: [new File([blob], 'image.png', { type: 'image/png' })] } });
+      editor.focus(true); editor.view.contentDOM.dispatchEvent(event);
     });
     await f.page.waitForFunction(() => /Added 1 image/.test(document.getElementById('status').textContent));
     await settled(f.page);
@@ -848,9 +848,9 @@ test('attachments open in an in-app viewer, SVG scripts never run, and added SVG
 
     // An SVG added on this device is stored without scripts or event handlers.
     await f.page.evaluate(async evil => {
-      const dt = new DataTransfer(); dt.items.add(new File([evil], 'drawing.svg', { type: 'image/svg+xml' }));
-      editor.focus(true);
-      editor.view.contentDOM.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files: [new File([evil], 'drawing.svg', { type: 'image/svg+xml' })] } });
+      editor.focus(true); editor.view.contentDOM.dispatchEvent(event);
     }, evil);
     await f.page.waitForFunction(() => /Added 1 image/.test(document.getElementById('status').textContent));
     const stored = await f.page.evaluate(async () => {

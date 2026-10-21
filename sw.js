@@ -1,5 +1,5 @@
 // Cache only the public app shell. Notes and authentication responses never enter Cache Storage.
-const CACHE = 'vault-e2ee-v1-1';
+const CACHE = 'vault-e2ee-v1-2';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg',
   'e2ee.js', 'cloud-sync.js', 'secure-store.js', 'auth.js', 'editor.js', 'app.js', 'contextmenu.js', 'tablepicker.js', 'vendor/marked.min.js', 'vendor/purify.min.js',
   'vendor/codemirror.min.js'];

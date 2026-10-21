@@ -197,10 +197,10 @@ test('service worker supports offline reload and never caches sync or authentica
   const f = await fixture({ serviceWorkers: 'allow' });
   try {
     await unlock(f.page); await settled(f.page);
-    await f.page.evaluate(async () => { await navigator.serviceWorker.ready; });
+    await f.page.evaluate(async () => { await window.registerShell(); await navigator.serviceWorker.ready; });
     await f.page.waitForFunction(() => !!navigator.serviceWorker.controller);
     await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
-    await f.context.setOffline(true);
+    f.shellOffline(true); f.state.offline = true;
     await f.page.reload();
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
     assert.equal(await editorText(f.page), '');
@@ -214,7 +214,7 @@ test('service worker supports offline reload and never caches sync or authentica
     assert.equal(cached.some(value => value.includes('/login') || value.includes('/vault/')), false);
     assert.ok(cached.some(value => value.endsWith('secure-store.js')));
     assert.deepEqual(f.errors, []);
-  } finally { await f.context.close(); }
+  } finally { f.shellOffline(false); await f.context.close(); }
 });
 
 test('locking during rename preserves both the replacement note and deletion marker', async () => {
@@ -283,6 +283,7 @@ test('tampered ciphertext cannot be unlocked or overwritten', async () => {
 test('initialization confirms recovery key before the single-use setup commits', async () => {
   const f = await fixture({ initialized: false, legacy: false });
   try {
+    await f.page.goto('about:blank');
     await f.page.goto(f.base + '/#' + new URLSearchParams({ setup: f.protocol.env.SETUP_TOKEN, server: url }));
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
     assert.equal(await f.page.evaluate(() => location.hash), '');

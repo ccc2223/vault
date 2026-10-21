@@ -308,6 +308,7 @@ const Auth = {
     const probe = new VaultStore(); probe.db = this.store.db;
     await probe.unlock(oldPassword); probe.forget(); this.ensure(epoch);
     if (this.changing) throw new Error('A credential update is already running.');
+    if (!this.session || this.session.exp <= Date.now()) await this.login(this.bundle);
     await this.app.sync({ strict: true }); await this.app.flush(); this.ensure(epoch);
     const generated = await VaultCrypto.create(newPassword, { vaultId: this.bundle.vaultId, epoch: this.bundle.epoch + 1 });
     await this.confirmRecovery(generated.recoveryKey); this.ensure(epoch);

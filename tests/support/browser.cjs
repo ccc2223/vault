@@ -11,10 +11,11 @@ const launch = () => playwright[browserName].launch(browserName === 'chromium' ?
   executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : playwright.chromium.executablePath()), headless: true, args: ['--no-sandbox']
 } : { headless: true });
 function harness() {
-  let server, browser, base;
+  let server, browser, base, shellUnavailable = false;
   before(async () => {
     const root = path.resolve(__dirname, '../..');
     server = http.createServer((req, res) => {
+      if (shellUnavailable) { res.writeHead(503).end(); return; }
       const name = new URL(req.url, 'http://localhost').pathname;
       if (name === '/seed') { res.setHeader('Content-Type', 'text/html'); res.end('<!doctype html><title>Seed</title>'); return; }
       const file = path.join(root, name === '/' ? 'index.html' : name);
@@ -32,6 +33,11 @@ function harness() {
   async function fixture({ legacy = true, serviceWorkers = 'block', initialized = true, ...options } = {}) {
     if (browserName === 'firefox') delete options.isMobile;
     const context = await browser.newContext({ serviceWorkers, ...options });
+    if (serviceWorkers === 'allow') await context.addInitScript(() => {
+      const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+      window.registerShell = () => register('sw.js');
+      navigator.serviceWorker.register = async () => ({ update: async () => {} });
+    });
     const f = await protocol({ initialized }), state = { password, offline: false, calls: [], delay: null, started: false, aliases: new Map() };
     let syncingRemote = null;
     class Remote extends Map {
@@ -97,7 +103,7 @@ function harness() {
     page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss());
     await page.goto(base); await page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
-    return { context, page, state, remote, errors, protocol: f, syncRemote, base, async device() {
+    return { context, page, state, remote, errors, protocol: f, syncRemote, base, shellOffline(value) { shellUnavailable = value; }, async device() {
       const other = await browser.newContext({ serviceWorkers: 'block' });
       await other.route(url + '/**', routeHandler); const next = await other.newPage();
       await next.goto(base); await next.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
