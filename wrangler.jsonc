@@ -5,10 +5,23 @@
   "compatibility_date": "2026-01-01",
   "vars": {
     "REPO": "ccc2223/vault-files",
-    "ALLOWED_ORIGIN": "https://ccc2223.github.io"
+    "ALLOWED_ORIGIN": "https://ccc2223.github.io",
+    "BRANCH": "main"
   },
   "durable_objects": {
-    "bindings": [{ "name": "LOGIN_LIMITER", "class_name": "LoginLimiter" }]
+    "bindings": [
+      {
+        "name": "LOGIN_LIMITER",
+        "class_name": "LoginLimiter"
+      }
+    ]
   },
-  "migrations": [{ "tag": "v1-login-limiter", "new_sqlite_classes": ["LoginLimiter"] }]
+  "migrations": [
+    {
+      "tag": "v1-login-limiter",
+      "new_sqlite_classes": [
+        "LoginLimiter"
+      ]
+    }
+  ]
 }

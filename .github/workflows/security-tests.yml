@@ -1,0 +1,31 @@
+name: Security and browser regression tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npm run test:unit
+      - run: npm install --global wrangler@4
+      - run: npm run test:runtime
+      - run: npm run test:browser
+        env:
+          VAULT_BROWSER: chromium
+      - run: npm run test:browser
+        env:
+          VAULT_BROWSER: firefox
+      - run: npm run test:browser
+        env:
+          VAULT_BROWSER: webkit

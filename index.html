@@ -297,10 +297,15 @@ button:disabled{opacity:.6;cursor:wait}
     <input id="unlock-url" type="url" placeholder="https://vault-sync-01.chriscleven.workers.dev" autocomplete="url">
     <label for="unlock-password">Password</label>
     <input id="unlock-password" type="password" autocomplete="current-password" required>
+    <div id="setup-confirm-row" hidden>
+      <label for="unlock-confirm">Confirm new password</label>
+      <input id="unlock-confirm" type="password" autocomplete="new-password">
+    </div>
     <p id="unlock-info" role="status">Preparing secure storage…</p>
     <p id="unlock-error" role="alert"></p>
     <button id="unlock-submit" class="on" disabled>Unlock</button>
     <button id="retry-lock" type="button" hidden>Retry saving and lock</button>
+    <button id="recover-open" type="button">Recover with recovery key</button>
     <p class="hint">Locks after one hour of inactivity and whenever you reload or reopen the app.</p>
   </form>
 </section>
@@ -354,25 +359,41 @@ button:disabled{opacity:.6;cursor:wait}
 <dialog id="dlg-cfg">
   <h3 style="margin:0">Sync settings</h3>
   <label for="c-url">Sync server URL</label><input id="c-url" type="url" autocomplete="url">
-  <label for="c-branch">Branch</label><input id="c-branch" placeholder="main">
-  <label for="c-pw">Password (required to sign in again)</label><input id="c-pw" type="password" autocomplete="current-password">
-  <p class="hint">Sync credentials stay in memory until you lock or close Vault. Local notes remain encrypted after signing out.</p>
+  <label for="c-pw">Current vault password</label><input id="c-pw" type="password" autocomplete="current-password">
+  <p class="hint">Your password stays on this device. The server receives a separate random access credential. Notes and filenames are encrypted before upload.</p>
   <p id="c-err" class="hint" role="alert"></p>
-  <button id="c-rekey">Update local password</button>
+  <button id="c-rekey">Change password and vault keys</button>
   <div class="row"><button id="c-clear">Sign out</button><button id="c-cancel">Cancel</button><button id="c-save" class="on">Sign in &amp; sync</button></div>
 </dialog>
 <dialog id="dlg-password">
-  <h3>Update local password</h3>
-  <p>First change PASSWORD in Cloudflare. Then enter your old local password and the new Cloudflare password here. All saved notes will be re-encrypted.</p>
-  <label for="old-password">Old local password</label><input id="old-password" type="password" autocomplete="current-password">
-  <label for="new-password">New Cloudflare password</label><input id="new-password" type="password" autocomplete="new-password">
+  <h3>Change password</h3>
+  <p>This rotates your vault keys and signs out other devices. Keep this window open until it finishes. Save the replacement recovery key when prompted.</p>
+  <label for="old-password">Current password</label><input id="old-password" type="password" autocomplete="current-password">
+  <label for="new-password">New password (15–256 characters)</label><input id="new-password" type="password" autocomplete="new-password">
   <p id="change-error" role="alert"></p>
   <div class="row"><button id="change-cancel">Cancel</button><button id="change-save" class="on">Verify &amp; update</button></div>
 </dialog>
 
+<dialog id="dlg-recovery-key" aria-labelledby="recovery-key-title">
+  <h3 id="recovery-key-title">Save your recovery key</h3>
+  <p>This key can recover your encrypted vault if you forget your password. Store it somewhere safe, separate from this browser. Vault cannot recover your data if you lose every password and recovery key.</p>
+  <label for="recovery-key">Recovery key</label><textarea id="recovery-key" readonly rows="3" style="width:100%;overflow-wrap:anywhere" autocomplete="off"></textarea>
+  <button id="recovery-download" type="button">Download recovery key</button>
+  <label for="recovery-confirm">Re-enter the saved recovery key</label><input id="recovery-confirm" type="password" autocomplete="off">
+  <p id="recovery-key-error" role="alert"></p>
+  <div class="row"><button type="button" id="recovery-confirm-save">I saved my recovery key</button></div>
+</dialog>
+<dialog id="dlg-recover" aria-labelledby="recover-title">
+  <h3 id="recover-title">Recover vault</h3>
+  <p>Recovery requires an internet connection and a fresh browser profile. It rotates your password and recovery key and signs out other devices. Keep existing profiles for any unsynced drafts.</p>
+  <label for="recovery-input">Recovery key</label><input id="recovery-input" type="password" autocomplete="off">
+  <label for="recovery-password">New password (15–256 characters)</label><input id="recovery-password" type="password" autocomplete="new-password">
+  <div class="row"><button id="recover-cancel" type="button">Cancel</button><button id="recover-submit" type="button">Recover vault</button></div>
+</dialog>
+
 <dialog id="dlg-spaces">
   <h3 style="margin:0">Spaces</h3>
-  <p class="hint">Each space is a separate set of notes, stored as a top-level folder in your notes repo.</p>
+  <p class="hint">Each space is a separate set of notes. Space names and folders stay encrypted when synced.</p>
   <div id="sp-list"></div>
   <form id="sp-new"><input id="sp-name" placeholder="New space name" autocomplete="off" aria-label="New space name"><button class="on">Create</button></form>
   <p id="sp-err" class="hint" role="alert"></p>
@@ -410,6 +431,8 @@ button:disabled{opacity:.6;cursor:wait}
 <script src="vendor/purify.min.js"></script>
 <script src="vendor/codemirror.min.js"></script>
 <script src="editor.js"></script>
+<script src="e2ee.js"></script>
+<script src="cloud-sync.js"></script>
 <script src="secure-store.js"></script>
 <script src="auth.js"></script>
 <script src="app.js"></script>

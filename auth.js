@@ -1,10 +1,10 @@
-/* Password unlock, memory-only cloud sessions and coordinated device locking. */
+/* One password unlocks a local key bundle. Only a random access secret reaches the Worker. */
 'use strict';
 const Auth = {
-  store: new VaultStore(), active: false, epoch: 0, session: null,
-  controller: new AbortController(), settings: {}, lastActivity: 0,
-  idleMs: 60 * 60 * 1000, timer: null, release: null, locking: null,
-  lockFailed: false, critical: Promise.resolve(), channel: null,
+  store: new VaultStore(), active: false, epoch: 0, session: null, bundle: null, cloud: null,
+  controller: new AbortController(), settings: {}, lastActivity: 0, preparing: false, setupToken: '',
+  idleMs: 60 * 60 * 1000, timer: null, release: null, locking: null, lockFailed: false,
+  critical: Promise.resolve(), channel: null, changing: false,
   message(id, text) { document.getElementById(id).textContent = text; },
   ensure(epoch = this.epoch) {
     if (!this.active || epoch !== this.epoch) throw new Error('Vault is locked.');
@@ -36,22 +36,6 @@ const Auth = {
     }
     return url.href.replace(/\/+$/, '');
   },
-  remember(url, branch = 'main') {
-    this.settings = { url, branch: branch.trim() || 'main' };
-    localStorage.setItem('vault.settings', JSON.stringify(this.settings));
-  },
-  async login(url, password, signal) {
-    const result = await fetch(url + '/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, cache: 'no-store',
-      body: JSON.stringify({ password }), signal: AbortSignal.any([signal, AbortSignal.timeout(15000)])
-    });
-    const data = await result.json().catch(() => ({}));
-    if (!result.ok || !data.session) throw new Error(data.message || 'Could not sign in (' + result.status + ').');
-    // Older Workers issue longer sessions. Enforce an eight-hour ceiling in the app too.
-    const exp = Math.min(Number(data.exp) || Number(data.session.split('.')[0]), Date.now() + 8 * 3600000);
-    if (!Number.isFinite(exp) || exp <= Date.now()) throw new Error('The server returned an invalid session.');
-    return { url, session: data.session, exp, branch: this.settings.branch || 'main' };
-  },
   async acquire() {
     if (!navigator.locks) throw new Error('This browser needs Web Locks support. Update your browser before using encrypted Vault.');
     if (this.release) return;
@@ -63,106 +47,6 @@ const Auth = {
     });
   },
   releaseLease() { this.release?.(); this.release = null; },
-  async start(app, defaultURL) {
-    this.app = app;
-    // Retain only non-sensitive preferences from old versions; never reuse old credentials.
-    try {
-      const previous = JSON.parse(localStorage.getItem('vault.gh') || 'null');
-      this.settings = JSON.parse(localStorage.getItem('vault.settings') || 'null') ||
-        { url: previous?.url || localStorage.getItem('vault.url') || defaultURL, branch: previous?.branch || 'main' };
-      localStorage.setItem('vault.settings', JSON.stringify(this.settings));
-      for (const key of ['vault.gh', 'vault.last', 'vault.url']) localStorage.removeItem(key);
-    } catch {
-      for (const key of ['vault.gh', 'vault.last', 'vault.url']) localStorage.removeItem(key);
-      this.settings = { url: defaultURL, branch: 'main' };
-    }
-    document.getElementById('unlock-url').value = this.settings.url || defaultURL || '';
-    document.getElementById('unlock-form').onsubmit = event => { event.preventDefault(); void this.unlock(); };
-    document.getElementById('retry-lock').onclick = () => this.lock('Locked. Your saved notes are encrypted.');
-    this.channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('vault-security-v3') : null;
-    if (this.channel) this.channel.onmessage = event => {
-      if (event.data === 'lock') void this.lock('Locked from another tab.', false);
-    };
-    window.addEventListener('storage', event => {
-      if (event.key === 'vault.lock' && event.newValue) void this.lock('Locked from another tab.', false);
-    });
-    for (const type of ['pointerdown', 'keydown', 'input', 'wheel', 'touchstart']) {
-      document.addEventListener(type, event => {
-        if (this.active && !this.checkIdle()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
-        if (this.active && event.isTrusted) this.activity();
-      }, { capture: true, passive: false });
-    }
-    window.addEventListener('focus', () => this.checkIdle());
-    window.addEventListener('pageshow', () => this.checkIdle());
-    window.addEventListener('pagehide', () => { void this.lock('Enter your password to reopen Vault.'); });
-    try {
-      if (!crypto.subtle) throw new Error('Vault requires a secure HTTPS browser context.');
-      await this.store.open(
-        () => this.message('unlock-info', 'Close all older Vault tabs or installed windows on this device to finish the security upgrade.'),
-        () => { void this.lock('Vault was updated in another tab. Reload this page.'); }
-      );
-      const record = await this.store.read();
-      const legacy = await this.store.hasLegacy();
-      this.message('unlock-info', record ? 'Enter your local password. Saved notes can also be unlocked offline.' :
-        legacy ? 'Sign in to encrypt your existing notes, including unsynced edits. Keep this tab open until the upgrade finishes.' :
-          'Enter your Cloudflare Worker URL and password to connect this device.');
-      document.getElementById('unlock-submit').disabled = false;
-    } catch (error) { this.message('unlock-error', error.message); }
-    if ('serviceWorker' in navigator) {
-      // A new version takes over while this page still runs the old code; reload while still locked.
-      if (navigator.serviceWorker.controller) {
-        navigator.serviceWorker.addEventListener('controllerchange', () => { if (!this.active) location.reload(); });
-      }
-      navigator.serviceWorker.register('sw.js').then(registration => registration.update()).catch(() => {});
-    }
-  },
-  async unlock() {
-    if (this.active || this.lockFailed || this.locking) return;
-    const button = document.getElementById('unlock-submit'); button.disabled = true;
-    const input = document.getElementById('unlock-password');
-    let password = input.value; input.value = '';
-    this.message('unlock-error', ''); this.message('unlock-info', 'Unlocking…');
-    const attempt = ++this.epoch;
-    this.controller.abort(); this.controller = new AbortController();
-    try {
-      if (!password) throw new Error('Enter your password.');
-      await this.acquire();
-      if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
-      let url = document.getElementById('unlock-url').value.trim();
-      if (url) url = this.normalizeURL(url);
-      this.critical = this.store.unlock(password);
-      const existed = await this.critical;
-      if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
-      let warning = '';
-      try {
-        if (!url) throw new Error('Enter your HTTPS sync server URL.');
-        const session = await this.login(url, password, this.controller.signal);
-        if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
-        this.session = session;
-      } catch (error) {
-        if (!existed || attempt !== this.epoch) throw error;
-        warning = 'Saved notes unlocked. Cloud sync is unavailable: ' + error.message;
-        this.session = null;
-      }
-      if (!existed) {
-        this.critical = this.store.initialize(password);
-        await this.critical;
-      }
-      password = '';
-      if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
-      this.remember(url, this.settings.branch);
-      this.active = true; this.lastActivity = Date.now(); this.armTimer();
-      document.body.dataset.locked = 'false';
-      document.getElementById('unlock-password').value = '';
-      await this.app.open();
-      if (warning) document.getElementById('status').textContent = warning;
-      this.message('unlock-info', '');
-    } catch (error) {
-      if (this.active) await this.lock('Could not finish opening Vault. Your saved notes were kept.');
-      else if (!this.locking) { this.store.forget(); this.session = null; this.releaseLease(); }
-      this.message('unlock-error', error.message);
-    } finally { password = ''; button.disabled = this.lockFailed; }
-  },
   async lock(message = 'Vault is locked. Enter your password to continue.', broadcast = true) {
     if (this.locking) return this.locking;
     const wasActive = this.active;
@@ -185,6 +69,7 @@ const Auth = {
           this.store.last = snapshot.last; this.store.history = snapshot.history;
         }
         if (this.store.key) { await this.store.persist(); await this.store.drain(); }
+        this.cloud?.cache.clear(); this.cloud = null; this.bundle = null; this.preparing = false; this.changing = false;
         this.store.forget(); this.releaseLease(); this.lockFailed = false;
         document.getElementById('retry-lock').hidden = true;
         this.message('unlock-error', ''); this.message('unlock-info', message);
@@ -201,32 +86,285 @@ const Auth = {
     })();
     return this.locking;
   },
-  async connect(value, branch, password) {
-    const epoch = this.ensure();
-    if (!password) throw new Error('Enter your Cloudflare password to sign in again.');
+  async request(path, options = {}) {
+    const epoch = this.epoch, { json, public: publicRequest = false, ...init } = options;
+    if (!publicRequest && !this.active && !this.preparing) throw new Error('Vault is locked.');
+    if (!publicRequest && this.active) this.ensure();
+    const headers = { Accept: 'application/json', ...(json !== undefined ? { 'Content-Type': 'application/json' } : {}), ...init.headers };
+    if (!publicRequest) {
+      if (this.session && this.session.exp > Date.now()) headers.Authorization = 'Bearer ' + this.session.session;
+      else if (this.setupToken) headers.Authorization = 'Setup ' + this.setupToken;
+      else { this.session = null; throw new Error('Sync session expired. Sign in again in Settings.'); }
+    }
+    const response = await fetch(this.settings.url + path, { ...init, headers,
+      ...(json !== undefined ? { body: JSON.stringify(json) } : {}), cache: 'no-store',
+      signal: AbortSignal.any([this.controller.signal, AbortSignal.timeout(60000)]) });
+    if (epoch !== this.epoch || this.controller.signal.aborted) throw new DOMException('Vault request cancelled.', 'AbortError');
+    const value = await response.json();
+    if (epoch !== this.epoch) throw new DOMException('Vault request cancelled.', 'AbortError');
+    if (!response.ok) {
+      if (response.status === 401) this.session = null;
+      const error = new Error(value.message || 'Encrypted sync failed (' + response.status + ').'); error.status = response.status; throw error;
+    }
+    return value;
+  },
+  remember() { localStorage.setItem('vault.e2ee.settings', JSON.stringify(this.settings)); },
+  async openStore(vaultId) {
+    if (this.store.db) {
+      if (this.settings.vaultId !== vaultId) throw new Error('This device has saved data for a different vault. Use a separate browser profile.');
+      return;
+    }
+    await this.store.open(
+      () => this.message('unlock-info', 'Close other Vault windows to finish opening secure storage.'),
+      () => { void this.lock('Vault changed in another window. Reload this page.'); }, vaultId);
+    this.settings.vaultId = vaultId; this.remember();
+  },
+  async login(bundle) {
+    const epoch = this.epoch;
+    const data = await this.request('/login', { method: 'POST', public: true, json: { accessSecret: bundle.accessSecret } });
+    if (epoch !== this.epoch || typeof data.session !== 'string' || !Number.isFinite(data.exp) || data.exp <= Date.now() || data.exp > Date.now() + 8 * 3600000) throw new Error('Invalid cloud session.');
+    this.session = data; return data;
+  },
+  client(bundle = this.bundle, checkpoint = this.store.cloud?.checkpoint) {
+    return new CloudVault((path, options) => this.request(path, options), bundle, checkpoint || null);
+  },
+  async start(app, defaultURL) {
+    this.app = app;
+    try { this.settings = JSON.parse(localStorage.getItem('vault.e2ee.settings') || 'null') || { url: defaultURL }; } catch { this.settings = { url: defaultURL }; }
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    this.setupToken = /^[A-Za-z0-9_-]{43}$/.test(fragment.get('setup') || '') ? fragment.get('setup') : '';
+    if (fragment.has('setup')) {
+      if (fragment.get('server')) this.settings.url = this.normalizeURL(fragment.get('server'));
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    this.settings.url = this.normalizeURL(this.settings.url || defaultURL);
+    document.getElementById('unlock-url').value = this.settings.url;
+    document.getElementById('unlock-form').onsubmit = event => { event.preventDefault(); void this.unlock(); };
+    document.getElementById('retry-lock').onclick = () => this.lock();
+    document.getElementById('recover-open').onclick = () => document.getElementById('dlg-recover').showModal();
+    document.getElementById('recover-cancel').onclick = () => document.getElementById('dlg-recover').close();
+    document.getElementById('recover-submit').onclick = () => { void this.recover(); };
+    document.getElementById('dlg-recover').addEventListener('close', () => {
+      document.getElementById('recovery-input').value = ''; document.getElementById('recovery-password').value = '';
+    });
+    this.channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('vault-e2ee-lock-v1') : null;
+    if (this.channel) this.channel.onmessage = event => { if (event.data === 'lock') void this.lock('Locked from another tab.', false); };
+    window.addEventListener('storage', event => { if (event.key === 'vault.lock' && event.newValue) void this.lock('Locked from another tab.', false); });
+    for (const type of ['pointerdown', 'keydown', 'input', 'wheel', 'touchstart']) document.addEventListener(type, event => {
+      if (this.active && !this.checkIdle()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (this.active && event.isTrusted) this.activity();
+    }, { capture: true, passive: false });
+    for (const type of ['focus', 'pageshow']) window.addEventListener(type, () => this.checkIdle());
+    window.addEventListener('pagehide', () => { void this.lock('Enter your password to reopen Vault.'); });
+    try {
+      if (!crypto.subtle || !navigator.locks) throw new Error('Vault requires HTTPS and a current browser with Web Crypto and Web Locks.');
+      if (this.settings.vaultId) await this.openStore(this.settings.vaultId);
+      const saved = this.store.db && await this.store.read();
+      this.message('unlock-info', saved ? 'Enter your vault password. Saved notes also work offline.' : this.setupToken ? 'Create a vault password of 15–256 characters.' : 'Enter your vault password to connect this device.');
+      document.getElementById('setup-confirm-row').hidden = !this.setupToken;
+      document.getElementById('unlock-submit').disabled = false;
+    } catch (error) { this.message('unlock-error', error.message); }
+    if ('serviceWorker' in navigator) {
+      if (navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => { if (!this.active && !this.preparing) location.reload(); });
+      navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
+    }
+  },
+  async confirmRecovery(key) {
+    const dialog = document.getElementById('dlg-recovery-key'), input = document.getElementById('recovery-confirm');
+    document.getElementById('recovery-key').value = key; input.value = '';
+    const signal = this.controller.signal;
+    if (signal.aborted) throw new Error('Recovery key confirmation cancelled.');
+    return new Promise((resolve, reject) => {
+      let accepted = false;
+      const abort = () => { dialog.close(); };
+      const close = () => {
+        signal.removeEventListener('abort', abort); dialog.removeEventListener('close', close);
+        document.getElementById('recovery-key').value = ''; input.value = '';
+        document.getElementById('recovery-download').onclick = document.getElementById('recovery-confirm-save').onclick = null;
+        accepted && !signal.aborted ? resolve() : reject(new Error('Recovery key confirmation cancelled.'));
+      };
+      document.getElementById('recovery-download').onclick = () => {
+        const url = URL.createObjectURL(new Blob([key + '\n'], { type: 'text/plain' }));
+        const a = document.createElement('a'); a.href = url; a.download = 'vault-recovery-key.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      document.getElementById('recovery-confirm-save').onclick = () => {
+        if (input.value.trim() !== key) { document.getElementById('recovery-key-error').textContent = 'Re-enter the full recovery key to confirm you saved it.'; return; }
+        accepted = true; dialog.close();
+      };
+      document.getElementById('recovery-key-error').textContent = '';
+      dialog.addEventListener('close', close); signal.addEventListener('abort', abort, { once: true });
+      dialog.showModal();
+    });
+  },
+  async unlock() {
+    if (this.active || this.preparing || this.locking || this.lockFailed) return;
+    const button = document.getElementById('unlock-submit'), input = document.getElementById('unlock-password');
+    let password = input.value; input.value = ''; button.disabled = true;
+    this.preparing = true; const attempt = ++this.epoch;
+    this.controller.abort(); this.controller = new AbortController();
+    this.message('unlock-error', ''); this.message('unlock-info', 'Unlocking encrypted vault…');
+    try {
+      VaultCrypto.password(password); await this.acquire();
+      const url = this.normalizeURL(document.getElementById('unlock-url').value.trim());
+      if (this.store.db && url !== this.settings.url) throw new Error('Use Sync settings to reconnect an existing device.');
+      this.settings.url = url;
+      let warning = '';
+      const existing = this.store.db && await this.store.read();
+      if (existing) {
+        this.critical = this.store.unlock(password); await this.critical;
+        if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
+        if (this.store.rotation) { this.critical = this.finishRotation(); await this.critical; }
+        this.bundle = this.store.cloud?.bundle;
+        if (!this.bundle) throw new Error('Encrypted device credentials are missing.');
+        this.cloud = this.client();
+        try { await this.login(this.bundle); } catch (e) { warning = 'Saved notes unlocked. Cloud sync unavailable: ' + e.message; }
+      } else {
+        const remote = await this.request('/vault/bootstrap', { public: true });
+        if (!remote.head) {
+          if (!this.setupToken) throw new Error('Open the setup link from the provisioning command to create this vault.');
+          if (password !== document.getElementById('unlock-confirm').value) throw new Error('The new passwords do not match.');
+          const generated = await VaultCrypto.create(password);
+          await this.confirmRecovery(generated.recoveryKey);
+          this.bundle = generated.bundle; this.cloud = this.client(this.bundle, null);
+          const checkpoint = await this.cloud.publish({ head: generated.head, sha: null }, [], { setup: true });
+          if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
+          await this.openStore(this.bundle.vaultId);
+          this.critical = this.store.initialize(password, { bundle: this.bundle, checkpoint }); await this.critical;
+          this.setupToken = '';
+        } else {
+          this.bundle = await VaultCrypto.unlock(remote.head, password);
+          await this.openStore(this.bundle.vaultId); await this.login(this.bundle);
+          this.cloud = this.client(this.bundle, null); const checkpoint = await this.cloud.load();
+          this.critical = this.store.initialize(password, { bundle: this.bundle, checkpoint }); await this.critical;
+        }
+        if (!this.session) await this.login(this.bundle);
+      }
+      if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
+      this.remember(); password = ''; document.getElementById('unlock-confirm').value = '';
+      this.active = true; this.lastActivity = Date.now(); this.armTimer(); document.body.dataset.locked = 'false';
+      await this.app.open(); if (warning) document.getElementById('status').textContent = warning;
+      this.message('unlock-info', '');
+    } catch (error) {
+      if (this.active) await this.lock('Opening failed. Your encrypted notes were kept.');
+      else if (!this.locking) { this.store.forget(); this.bundle = null; this.cloud = null; this.session = null; this.releaseLease(); }
+      this.message('unlock-error', error.message);
+    } finally { password = ''; this.preparing = false; button.disabled = this.lockFailed; }
+  },
+  async connect(value, ignoredBranch, password) {
+    const epoch = this.ensure(); VaultCrypto.password(password);
+    if (this.changing) throw new Error('A credential update is already running.');
     const url = this.normalizeURL(value);
-    const session = await this.login(url, password, this.controller.signal);
-    this.ensure(epoch);
-    this.remember(url, branch); this.session = { ...session, branch: this.settings.branch };
+    if (url !== this.settings.url) throw new Error('Changing sync servers requires a separate browser profile.');
+    this.changing = true;
+    const previous = this.store.cloud, previousSession = this.session, salt = this.store.header.salt;
+    try {
+      await this.app.waitSync(); await this.app.flush(); this.ensure(epoch);
+      const remote = await this.request('/vault/bootstrap', { public: true });
+      const bundle = await VaultCrypto.unlock(remote.head, password); this.ensure(epoch);
+      if (bundle.vaultId !== this.bundle.vaultId) throw new Error('The server contains a different vault.');
+      await this.login(bundle); this.ensure(epoch);
+      this.critical = (async () => {
+        this.store.cloud = { ...previous, bundle };
+        try { await this.store.rekey(null, password); }
+        catch (error) { if (this.store.header.salt === salt) this.store.cloud = previous; throw error; }
+      })();
+      await this.critical; this.ensure(epoch); this.bundle = bundle; this.cloud?.cache.clear(); this.cloud = this.client();
+    } catch (error) {
+      if (this.store.header?.salt === salt && this.active) this.session = previousSession;
+      throw error;
+    } finally { this.changing = false; }
+  },
+  async finishRotation() {
+    const pending = this.store.rotation;
+    if (!pending) return;
+    const old = this.store.cloud.bundle, next = pending.generated.bundle;
+    const remote = await this.request('/vault/bootstrap', { public: true });
+    let checkpoint;
+    if (remote.head?.vaultId !== next.vaultId) throw new Error('Rotation belongs to a different vault.');
+    if (remote.head.epoch === next.epoch && remote.head.authDigest === pending.generated.head.authDigest) {
+      await this.login(next); checkpoint = await this.client(next, null).load();
+    } else if (remote.head.epoch === old.epoch && remote.head.authDigest === pending.base.head.authDigest) {
+      await this.login(old);
+      const client = this.client(old, this.store.cloud.checkpoint);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const base = await client.load();
+        if (base.sha !== pending.base.sha) {
+          pending.base = base; pending.prepared = await client.prepareRotation(base, pending.generated);
+          await this.store.persist();
+        }
+        try { checkpoint = await client.publishPrepared(pending.base, pending.prepared); break; }
+        catch (e) { if (e.status !== 409 || attempt === 2) throw e; }
+      }
+      await this.login(next);
+    } else throw new Error('Vault changed during password rotation. Encrypted local state was kept.');
+    this.store.cloud = { bundle: next, checkpoint }; this.store.rotation = null;
+    await this.store.persist(); await this.store.drain(); this.bundle = next; this.cloud?.cache.clear(); this.cloud = this.client();
   },
   async changePassword(oldPassword, newPassword) {
-    const epoch = this.ensure();
-    if (!oldPassword || !newPassword) throw new Error('Enter both the old local password and the new Cloudflare password.');
-    const session = await this.login(this.settings.url, newPassword, this.controller.signal);
-    this.ensure(epoch);
-    // No sync or user editing may race re-encryption. The native dialog blocks editing.
-    this.controller.abort(); this.controller = new AbortController(); this.epoch++;
-    const current = this.epoch;
+    const epoch = this.ensure(); VaultCrypto.password(newPassword);
+    if (!oldPassword) throw new Error('Enter the current password.');
+    const local = await this.store.read();
+    // Verify current local password before preparing any remote writes.
+    const probe = new VaultStore(); probe.db = this.store.db;
+    await probe.unlock(oldPassword); probe.forget(); this.ensure(epoch);
+    if (this.changing) throw new Error('A credential update is already running.');
+    await this.app.sync({ strict: true }); await this.app.flush(); this.ensure(epoch);
+    const generated = await VaultCrypto.create(newPassword, { vaultId: this.bundle.vaultId, epoch: this.bundle.epoch + 1 });
+    await this.confirmRecovery(generated.recoveryKey); this.ensure(epoch);
+    this.changing = true;
+    await this.app.waitSync(); this.ensure(epoch);
     this.critical = (async () => {
-      await this.app.flush();
-      this.ensure(current);
-      await this.store.rekey(oldPassword, newPassword);
+      const base = await this.cloud.load(), prepared = await this.cloud.prepareRotation(base, generated);
+      this.ensure(epoch);
+      this.store.rotation = { base, prepared, generated: { head: generated.head, bundle: generated.bundle } };
+      try { await this.store.rekey(oldPassword, newPassword); }
+      catch (error) {
+        // A failed atomic local rekey must never journal the new master under the old password.
+        if (this.store.header?.salt === local.salt) this.store.rotation = null;
+        throw error;
+      }
+      await this.finishRotation();
     })();
+    try { await this.critical; this.ensure(epoch); }
+    catch (e) {
+      const changed = this.store.header?.salt !== local.salt;
+      await this.lock(changed ? 'Password rotation is pending. Unlock with the NEW password to resume.' : 'Password change did not finish. Unlock with the current password.');
+      throw new Error(changed ? 'Use the new password on this device to resume the pending rotation.' : e.message);
+    } finally { this.changing = false; }
+  },
+  async recover() {
+    const button = document.getElementById('recover-submit'); button.disabled = true;
+    let attempt;
+    let recovery = document.getElementById('recovery-input').value, password = document.getElementById('recovery-password').value;
     try {
-      await this.critical; this.ensure(current); this.session = session;
-    } catch (error) {
-      this.ensure(current);
-      throw new Error('Password update failed. Your existing encrypted notes were kept. Check the old local password.');
-    }
+      if (this.active || this.preparing || this.locking) throw new Error('Lock Vault before recovery.');
+      VaultCrypto.password(password);
+      if (this.store.db && await this.store.read()) throw new Error('This profile has saved local notes. Use a fresh browser profile for recovery; keep this copy for any unsynced drafts.');
+      this.preparing = true; attempt = ++this.epoch;
+      this.controller.abort(); this.controller = new AbortController(); await this.acquire();
+      const remote = await this.request('/vault/bootstrap', { public: true });
+      const old = await VaultCrypto.unlock(remote.head, recovery, true); recovery = '';
+      await this.login(old); const client = this.client(old, null), base = await client.load();
+      const generated = await VaultCrypto.create(password, { vaultId: old.vaultId, epoch: old.epoch + 1 });
+      if (attempt !== this.epoch) throw new Error('Recovery cancelled.');
+      document.getElementById('dlg-recover').close(); await this.confirmRecovery(generated.recoveryKey);
+      const prepared = await client.prepareRotation(base, generated);
+      await this.openStore(old.vaultId);
+      if (attempt !== this.epoch) throw new Error('Recovery cancelled.');
+      this.critical = (async () => {
+        await this.store.initialize(password, { bundle: old, checkpoint: base }); this.remember();
+        this.store.rotation = { base, prepared, generated: { head: generated.head, bundle: generated.bundle } };
+        await this.store.persist(); await this.finishRotation();
+      })();
+      await this.critical;
+      if (attempt !== this.epoch) throw new Error('Recovery cancelled.');
+      this.remember();
+      this.active = true; this.lastActivity = Date.now(); this.armTimer(); document.body.dataset.locked = 'false'; await this.app.open();
+    } catch (e) {
+      this.message('unlock-error', e.message);
+      if (this.store.rotation) this.message('unlock-info', 'Recovery is pending. Unlock with your new password to resume.');
+      if (this.active) await this.lock('Recovery did not finish. Encrypted local state was kept.');
+      else if (!this.locking) { this.session = null; this.bundle = null; this.cloud = null; this.store.forget(); this.releaseLease(); }
+    } finally { recovery = ''; password = ''; this.preparing = false; button.disabled = false; }
   }
 };
