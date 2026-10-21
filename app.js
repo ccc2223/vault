@@ -698,7 +698,9 @@ function sugKey(e) {
   else return false;
   e.preventDefault(); drawSug(); return true;
 }
-editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
+editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => {
+  if (document.activeElement !== editor.view.contentDOM) hideSug();
+}, 150));
 
 /* ---------- outline ---------- */
 // Headings of a note: ATX headings outside code blocks, as {level, text, pos}.

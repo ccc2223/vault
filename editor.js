@@ -734,7 +734,7 @@ const LiveEditor = (() => {
       events, mode.of(modeExt()),
       EditorView.updateListener.of(u => {
         if (u.docChanged && !u.transactions.some(tr => tr.annotation(external))) hooks.change(u.state.doc.toString());
-        if (u.docChanged || u.selectionSet) hooks.cursor(u.docChanged);
+        if (u.docChanged || u.selectionSet && !u.state.selection.eq(u.startState.selection)) hooks.cursor(u.docChanged);
       })
     ];
     const view = new EditorView({ parent, state: EditorState.create({ extensions: extensions() }) });

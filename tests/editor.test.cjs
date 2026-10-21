@@ -223,7 +223,9 @@ test('a new device picks up spaces; a folder becomes a space without moving file
 
     await f.page.evaluate(() => removeSpace('Projects'));
     assert.equal(await f.page.evaluate(() => space), '');
-    // Its notes show in Main under the (closed) folder.
+    // Collapse explicitly: first-device note selection may already have opened this folder.
+    const projects = f.page.locator('#list .dir[data-d="Projects"]');
+    if (await projects.getAttribute('aria-expanded') === 'true') await projects.click();
     assert.deepEqual((await listed(f.page)).sort(), ['Root.md']);
     await f.page.locator('#list .dir[data-d="Projects"]').click();
     assert.deepEqual((await listed(f.page)).sort(), ['Projects/a.md', 'Projects/b.md', 'Root.md']);
