@@ -112,7 +112,12 @@ async function unlock(page, value = password) {
   await page.waitForFunction(() => Auth.active || !!document.getElementById('unlock-error').textContent);
 }
 const editorText = page => page.evaluate(() => editor.text);
-async function settled(page) { await page.waitForFunction(() => Auth.active && Auth.store.pending === 0 && syncing === null && saveT === null); }
+async function settled(page) {
+  await page.waitForFunction(() => {
+    if (!Auth.active && !Auth.preparing && document.getElementById('unlock-error').textContent) throw new Error(document.getElementById('unlock-error').textContent);
+    return Auth.active && !Auth.preparing && Auth.store.pending === 0 && syncing === null && saveT === null;
+  });
+}
 const raw = page => page.evaluate(async () => ({ sealed: Auth.store.db ? await Auth.store.read() : undefined, settings: Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])) }));
 async function locked(page) {
   await page.waitForFunction(() => !Auth.active && !Auth.locking && !Auth.lockFailed);

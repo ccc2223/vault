@@ -51,11 +51,14 @@ async function fixture({ initialized = true, password = 'test password with plen
       return limiters.get(name);
     } } };
   const f = { C, git, env, worker, limiters, password, token: null, setup: true };
-  f.response = async (path, { json, headers = {}, public: pub = false, ...options } = {}) => worker.fetch(new Request('https://sync.example' + path, {
-    method: options.method || (json !== undefined ? 'POST' : 'GET'), ...options,
-    headers: { Origin: env.ALLOWED_ORIGIN, 'CF-Connecting-IP': '192.0.2.1', ...(!pub ? { Authorization: f.token ? 'Bearer ' + f.token : 'Setup ' + env.SETUP_TOKEN } : {}), ...headers },
-    ...(json !== undefined ? { body: JSON.stringify(json) } : {})
-  }), env);
+  f.response = async (path, { json, headers = {}, public: pub = false, ...options } = {}) => {
+    const merged = new Headers({ Origin: env.ALLOWED_ORIGIN, 'CF-Connecting-IP': '192.0.2.1', ...(!pub ? { Authorization: f.token ? 'Bearer ' + f.token : 'Setup ' + env.SETUP_TOKEN } : {}) });
+    for (const [name, value] of Object.entries(headers)) merged.set(name, value);
+    return worker.fetch(new Request('https://sync.example' + path, {
+      method: options.method || (json !== undefined ? 'POST' : 'GET'), ...options, headers: merged,
+      ...(json !== undefined ? { body: JSON.stringify(json) } : {})
+    }), env);
+  };
   f.request = async (path, options) => {
     const r = await f.response(path, options), data = await r.json();
     if (!r.ok) { const error = new Error(data.message); error.status = r.status; throw error; } return data;
