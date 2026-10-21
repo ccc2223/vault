@@ -78,6 +78,7 @@ test('recovery key on a fresh device rotates all credentials and preserves synce
   try {
     await unlock(f.page); await settled(f.page); await f.page.evaluate(() => Auth.lock()); await locked(f.page);
     other = await f.device(); f.state.password = 'new recovery password with entropy';
+    await other.page.locator('#unlock-url').fill(url);
     await other.page.locator('#recover-open').click();
     await other.page.locator('#recovery-input').fill(f.protocol.generated.recoveryKey);
     await other.page.locator('#recovery-password').fill(f.state.password);

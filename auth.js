@@ -340,6 +340,7 @@ const Auth = {
       if (this.active || this.preparing || this.locking) throw new Error('Lock Vault before recovery.');
       VaultCrypto.password(password);
       if (this.store.db && await this.store.read()) throw new Error('This profile has saved local notes. Use a fresh browser profile for recovery; keep this copy for any unsynced drafts.');
+      this.settings.url = this.normalizeURL(document.getElementById('unlock-url').value.trim());
       this.preparing = true; attempt = ++this.epoch;
       this.controller.abort(); this.controller = new AbortController(); await this.acquire();
       const remote = await this.request('/vault/bootstrap', { public: true });

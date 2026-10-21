@@ -5,7 +5,7 @@
   "scripts": {
     "vendor": "node scripts/vendor.cjs",
     "test": "npm run test:unit && npm run test:browser",
-    "test:unit": "node --test --test-isolation=none --test-concurrency=1 tests/crypto.test.cjs tests/worker.test.cjs tests/cloud.test.cjs",
+    "test:unit": "node --test --test-concurrency=1 tests/crypto.test.cjs tests/worker.test.cjs tests/cloud.test.cjs",
     "test:browser": "node --test --test-concurrency=1 tests/vault.test.cjs tests/editor.test.cjs tests/contextmenu.test.cjs tests/sw.test.cjs",
     "provision": "node scripts/provision.mjs",
     "test:runtime": "node --test tests/runtime.test.cjs"
