@@ -27,6 +27,18 @@ Shortcuts: Ctrl/Cmd+P commands · Alt+D today's note · Ctrl/Cmd+O switcher · C
 
 Spaces and attachment paths are logical paths inside the encrypted manifest. They do not appear as readable folders or files in GitHub. Remove notes through Vault; deleting encrypted objects directly can make checkpoints unreadable.
 
+## Deploy from a phone
+
+Use a browser signed in to Cloudflare and GitHub. This path uses the existing Worker, its existing `GH_TOKEN` secret, and the configured Durable Object binding.
+
+1. In [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens), choose **Create Token**, use the **Edit Cloudflare Workers** template, restrict account resources to the account containing `vault-sync-01`, then create and copy the token.
+2. Open [repository Actions secrets](https://github.com/ccc2223/vault/settings/secrets/actions). Add a repository secret named `CLOUDFLARE_API_TOKEN` with that token.
+3. Open the existing Worker in the Cloudflare dashboard. Copy its account ID (the 32-character account segment in `https://dash.cloudflare.com/<ACCOUNT_ID>/...`) and add a second repository secret named `CLOUDFLARE_ACCOUNT_ID` with that value.
+4. After the PR is merged, open [Deploy Vault Worker](https://github.com/ccc2223/vault/actions/workflows/deploy-worker.yml), choose **Run workflow**, keep branch **main**, and run it. The GitHub Pages frontend publishes from main separately.
+5. The workflow generates the session/setup secrets, deploys the Worker and checks its live origin, repository access and Durable Object binding. The setup link is encrypted to the cloud workspace's handoff key before logging. Ask the deployment assistant to retrieve and decrypt the successful run's handoff; then open the private link it provides, choose the vault password, and save/confirm the recovery key.
+
+Cloudflare and GitHub account authorization stays with the owner. The public repository contains only the handoff public key; the corresponding private key is retained in the deployment workspace outside the repository. If that workspace is lost before initialization, replace the handoff key and rerun deployment to generate a new setup capability. Rerunning rotates the session secret and signs out existing cloud sessions. Do not rerun provisioning during an unfinished key rotation.
+
 ## Deploy a development vault
 
 This is a fresh development format. There is no legacy plaintext import or migration. Use an empty private notes repository with an initialized `main` branch. The public application repository and private ciphertext repository are separate.
