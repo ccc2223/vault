@@ -1,7 +1,11 @@
 // Test-only harness: run the production login handler with real SQLite Durable Objects.
 import { createWorker, LoginLimiter } from '../worker.js';
 export { LoginLimiter };
-const worker = createWorker(async () => new Response(null, { status: 404 }));
+const worker = createWorker(async (url, init) => {
+  // Validate the production fetch options in workerd before returning mock GitHub data.
+  new Request(url, init);
+  return new Response(null, { status: 404 });
+});
 export default {
   fetch(request, env) {
     const ip = new URL(request.url).searchParams.get('ip') || '192.0.2.1';

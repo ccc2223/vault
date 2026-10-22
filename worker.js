@@ -68,7 +68,7 @@ async function github(env, path, options = {}) {
     Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + env.GH_TOKEN,
     'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'vault-e2ee-worker',
     'Content-Type': 'application/json', 'Cache-Control': 'no-cache'
-  }, redirect: 'error' }); }
+  }, redirect: 'manual' }); }
   catch { reject(502, 'Encrypted storage is unavailable.'); }
   if (response.status === 404) return null;
   if (response.status === 409 || response.status === 422) reject(409, 'Storage changed. Pull and retry.');
