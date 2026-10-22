@@ -33,6 +33,17 @@ test('origins and configuration fail closed; CORS includes conditional-write met
   assert.equal(preflight.status, 204); assert.match(preflight.headers.get('Access-Control-Allow-Methods'), /PUT/);
   delete f.env.SESSION_SECRET; assert.equal((await f.response('/vault/head')).status, 503);
 });
+test('storage redirects fail closed without following credentials to another endpoint', async () => {
+  const f = await fixture({ initialized: false });
+  f.git.fail = async (url, init) => {
+    assert.equal(init.redirect, 'manual');
+    return new Response(null, { status: 302, headers: { Location: 'https://untrusted.example/storage' } });
+  };
+  const response = await f.response('/vault/bootstrap', { public: true });
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { message: 'Encrypted storage is unavailable.' });
+  assert.equal(f.git.calls.length, 1);
+});
 test('Durable Object transactions admit exactly ten concurrent requests per IP; bootstrap has its own budget', async () => {
   const f = await fixture();
   const attempt = ip => f.response('/login', { public: true, json: {}, headers: { 'CF-Connecting-IP': ip } });
