@@ -1,6 +1,6 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
+const { launch } = require('./support/browser.cjs');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,7 +23,7 @@ before(async () => {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   base = 'http://127.0.0.1:' + server.address().port + '/';
-  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : chromium.executablePath()), headless: true, args: ['--no-sandbox'] });
+  browser = await launch();
 });
 after(async () => { await browser?.close(); await new Promise(resolve => server?.close(resolve)); });
 
@@ -47,3 +47,4 @@ test('a new release replaces the cached shell even while the old files are still
     assert.deepEqual(cached, { keys: ['vault-test-B'], version: 'B' });
   } finally { await context.close(); version = 'A'; }
 });
+

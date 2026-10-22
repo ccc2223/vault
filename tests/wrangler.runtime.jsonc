@@ -1,0 +1,7 @@
+{
+  "name": "vault-limiter-test",
+  "main": "limiter-runtime.mjs",
+  "compatibility_date": "2026-01-01",
+  "durable_objects": { "bindings": [{ "name": "LOGIN_LIMITER", "class_name": "LoginLimiter" }] },
+  "migrations": [{ "tag": "test-v1", "new_sqlite_classes": ["LoginLimiter"] }]
+}

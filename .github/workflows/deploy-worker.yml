@@ -1,0 +1,40 @@
+name: Deploy Vault Worker
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vault-worker-deployment
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check account authorization
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Add the CLOUDFLARE_API_TOKEN repository Actions secret.'; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo 'Add the CLOUDFLARE_ACCOUNT_ID repository Actions secret.'; exit 1; }
+      - run: npm install --global wrangler@4
+      - name: Provision and deploy
+        run: node scripts/provision.mjs --worker-url https://vault-sync-01.chriscleven.workers.dev --handoff-public-key .github/vault-deploy-handoff-public.pem
+      - name: Check live Worker and repository access
+        run: |
+          node --input-type=module <<'JS'
+          const response = await fetch('https://vault-sync-01.chriscleven.workers.dev/vault/bootstrap', {
+            headers: { Origin: 'https://ccc2223.github.io' }, signal: AbortSignal.timeout(30000)
+          });
+          if (!response.ok) throw new Error('Worker health check failed: HTTP ' + response.status);
+          const result = await response.json();
+          if (!Object.hasOwn(result, 'head') || !Object.hasOwn(result, 'sha')) throw new Error('Unexpected Worker response.');
+          console.log('Live Worker, origin, repository access and Durable Object checks passed.');
+          JS

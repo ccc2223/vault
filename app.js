@@ -192,12 +192,12 @@ function protectImage(img, value) {
   }
   const epoch = Auth.epoch;
   const button = Object.assign(document.createElement('button'), {
-    type: 'button', className: 'remote-image', textContent: 'Load remote image',
+    type: 'button', contentEditable: 'false', className: 'remote-image', textContent: 'Load remote image',
     title: 'Loading shares your IP address with ' + url.hostname
   });
   if (img.alt) button.setAttribute('aria-label', 'Load remote image: ' + img.alt);
   // Do not select the image or enter a table cell instead of activating its privacy control.
-  button.addEventListener('mousedown', event => event.stopPropagation());
+  button.addEventListener('mousedown', event => { event.preventDefault(); event.stopPropagation(); });
   button.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation(); });
   button.addEventListener('click', event => {
     event.preventDefault(); event.stopPropagation();
@@ -698,7 +698,9 @@ function sugKey(e) {
   else return false;
   e.preventDefault(); drawSug(); return true;
 }
-editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => { $('#sug').style.display = 'none'; }, 150));
+editor.view.contentDOM.addEventListener('blur', () => setTimeout(() => {
+  if (document.activeElement !== editor.view.contentDOM) hideSug();
+}, 150));
 
 /* ---------- outline ---------- */
 // Headings of a note: ATX headings outside code blocks, as {level, text, pos}.
@@ -1040,167 +1042,138 @@ $('#cmd-in').addEventListener('keydown', e => {
 $('#cmd-list').addEventListener('click', e => { const d = e.target.closest('div[data-i]'); if (d) cmdGo(+d.dataset.i); });
 $('#dlg-cmd').addEventListener('click', e => { if (e.target === $('#dlg-cmd')) $('#dlg-cmd').close(); });
 
-/* ---------- GitHub sync ---------- */
+/* ---------- end-to-end encrypted sync ---------- */
 const getCfg = () => Auth.session;
-const encPath = p => p.split('/').map(encodeURIComponent).join('/');
-const bytesB64 = bytes => {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-};
-const b64bytes = s => Uint8Array.from(atob(s.replace(/\s/g, '')), c => c.charCodeAt(0));
-const b64e = s => bytesB64(new TextEncoder().encode(s));
-const b64d = s => new TextDecoder().decode(b64bytes(s));
 const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-// "folder/name (conflict 2026-10-17).ext", numbered when that name is taken.
 function conflictPath(p, taken, today) {
   const ext = /\.[^./]+$/.exec(p)?.[0] || '', stem = p.slice(0, p.length - ext.length) + ` (conflict ${today}`;
   let cp = stem + ')' + ext, suffix = 2;
   while (taken.has(cp)) cp = stem + ' ' + suffix++ + ')' + ext;
   return cp;
 }
-async function gh(path, opts = {}) {
-  const epoch = Auth.ensure();
-  const c = getCfg();
-  if (!c || c.exp <= Date.now()) {
-    Auth.session = null;
-    throw new Error('Sync session expired. Sign in again in Settings.');
-  }
-  const headers = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + c.session };
-  if (opts.body) headers['Content-Type'] = 'application/json';
-  const r = await fetch(c.url + '/gh' + path, { ...opts, headers, signal: Auth.controller.signal, cache: 'no-store' });
-  Auth.ensure(epoch);
-  const result = await r.json();
-  Auth.ensure(epoch);
-  if (!r.ok) {
-    if (r.status === 401) { Auth.session = null; throw new Error('Sync session expired. Sign in again in Settings.'); }
-    throw new Error(r.status + (result.message ? ' ' + result.message : ''));
-  }
-  return result;
-}
 function setStatus(t, err) { if (!Auth.active) return; const s = $('#status'); s.textContent = t; s.classList.toggle('err', !!err); }
 function scheduleSync(ms) { if (!getCfg()) return; clearTimeout(syncT); syncT = setTimeout(sync, ms); }
-let syncing = null;
-async function sync() {
-  if (!Auth.active || !Auth.checkIdle()) return;
+let syncing = null, syncPromise = null;
+async function sync(options = {}) {
+  if (!Auth.active || !Auth.checkIdle() || Auth.changing) return;
   const epoch = Auth.epoch;
-  const c = getCfg();
-  if (!c) { setStatus('Saved notes unlocked — sign in in Settings to sync'); return; }
-  if (syncing === epoch) return;
-  syncing = epoch; clearTimeout(syncT); setStatus('Syncing…');
-  let changed = false;
-  try {
-    await flush();
-    const tree = await gh('/git/trees/' + encodeURIComponent(c.branch || 'main') + '?recursive=1');
-    if (tree.truncated) throw new Error('Repository is too large to sync safely.');
-    const remote = new Map(tree.tree
-      .filter(t => t.type === 'blob' && (t.path === SPACES || /\.md$/i.test(t.path) && !t.path.split('/').some(s => s.startsWith('.'))))
-      .map(t => [t.path, t.sha]));
-    const remoteFiles = new Map(tree.tree
-      .filter(t => t.type === 'blob' && IMAGE.test(t.path) && !t.path.split('/').some(s => s.startsWith('.')))
-      .map(t => [t.path, t.sha]));
-    const today = new Date().toISOString().slice(0, 10);
-
-    // pull: fetch changed blobs a few at a time; each result is applied in memory in one synchronous step
-    let restored = 0;
-    await pool([...remote].filter(([p, sha]) => notes.get(p)?.sha !== sha), 6, async ([p, sha]) => {
-      const text = b64d((await gh('/git/blobs/' + sha)).content);
-      const old = notes.get(p);
-      if (old && !old.deleted && !old.dirty && old.content !== text) await keepVersion(p, old.content, 'sync');
-      const l = notes.get(p);
-      changed = true;
-      if (!l) {
-        notes.set(p, { path: p, content: text, mtime: Date.now(), sha, dirty: false });
-      } else if (l.deleted) {
-        // Deleted here but edited elsewhere since our last sync: keep the remote edit rather than discard it.
-        Object.assign(l, { content: text, sha, deleted: false, dirty: false, mtime: Date.now() }); restored++;
-      } else if (!l.dirty) {
-        l.content = text; l.sha = sha; l.mtime = Date.now(); showPulled(l);
-      } else if (p === SPACES) {
-        l.content = mergeSpaces(l.content, text); l.sha = sha; l.dirty = l.content !== text;
-      } else if (l.content !== text) {
-        const cp = conflictPath(p, notes, today);
-        notes.set(cp, { path: cp, content: text, mtime: Date.now(), sha: null, dirty: true });
-        l.sha = sha;
-      } else { l.sha = sha; l.dirty = false; }
-    });
-    // remote deletions: notes deleted on another device go to this device's trash
-    for (const l of [...notes.values()]) {
-      if (remote.has(l.path) || l.deleted) continue;
-      if (l.sha && !l.dirty) await keepVersion(l.path, l.content, 'sync', true);
-      if (l.sha && !l.dirty) { notes.delete(l.path); changed = true; }
-      else if (l.sha) { l.sha = null; changed = true; }
+  if (!Auth.cloud || !Auth.session) {
+    const error = new Error('Saved notes unlocked. Sign in in Settings to sync.'); setStatus(error.message);
+    if (options.strict) throw error; return;
+  }
+  if (syncing === epoch) {
+    try { await syncPromise; } catch (e) { if (options.strict) throw e; } return;
+  }
+  syncing = epoch; clearTimeout(syncT); setStatus('Syncing encrypted notes…');
+  syncPromise = (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await encryptedSync(epoch); return; }
+      catch (e) { if (e.status !== 409 || attempt === 2) throw e; }
     }
-    // pull images: bytes are stored encrypted first, then the vault records them in the same write as the notes
-    let images = 0;
-    await pool([...remoteFiles].filter(([p, sha]) => files.get(p)?.sha !== sha), 4, async ([p, sha]) => {
-      const bytes = b64bytes((await gh('/git/blobs/' + sha)).content);
-      const id = await Auth.store.putFile(bytes); Auth.ensure(epoch);
-      const meta = { path: p, id, size: bytes.length, mtime: Date.now(), sha, dirty: false };
-      const l = files.get(p);
-      changed = true; images++;
-      if (!l || !l.dirty) { files.set(p, meta); return; }
-      const mine = await Auth.store.getFile(l.id); Auth.ensure(epoch);
-      if (sameBytes(mine, bytes)) { l.sha = sha; l.dirty = false; return; }
-      // Both sides changed the image: keep this device's copy and save the remote one beside it.
-      const cp = conflictPath(p, files, today);
-      files.set(cp, { ...meta, path: cp, sha: null, dirty: true }); l.sha = sha;
-    });
-    for (const l of [...files.values()]) {
-      if (remoteFiles.has(l.path)) continue;
-      if (l.sha && !l.dirty) { files.delete(l.path); changed = true; images++; }
-      else if (l.sha) { l.sha = null; changed = true; }
-    }
-    // Persist everything pulled as one encrypted write instead of re-encrypting the vault per note.
-    if (changed) { await DB.replace(); changed = false; }
-    // push images before notes, so another device never syncs a note whose new image isn't uploaded yet
-    let pushed = 0;
-    for (const l of [...files.values()]) {
-      if (!l.dirty && l.sha) continue;
-      const sent = l.id, bytes = await Auth.store.getFile(sent); Auth.ensure(epoch);
-      const body = { message: (l.sha ? 'Update ' : 'Add ') + l.path, content: bytesB64(bytes), branch: c.branch || 'main' };
-      if (l.sha) body.sha = l.sha;
-      const res = await gh('/contents/' + encPath(l.path), { method: 'PUT', body: JSON.stringify(body) });
-      l.sha = res.content.sha; l.dirty = l.id !== sent; changed = true; pushed++;
-    }
-    for (const l of [...notes.values()]) {
-      if (l.deleted) {
-        if (remote.has(l.path)) {
-          // The pull restores tombstones whose remote changed, so this sha is the version we deleted.
-          await gh('/contents/' + encPath(l.path), { method: 'DELETE', body: JSON.stringify({ message: 'Delete ' + l.path, sha: l.sha, branch: c.branch || 'main' }) });
-          pushed++;
-        }
-        notes.delete(l.path); changed = true; continue;
-      }
-      if (l.dirty || !l.sha) {
-        const sent = l.content;
-        const body = { message: 'Update ' + l.path, content: b64e(sent), branch: c.branch || 'main' };
-        if (l.sha) body.sha = l.sha;
-        const res = await gh('/contents/' + encPath(l.path), { method: 'PUT', body: JSON.stringify(body) });
-        l.sha = res.content.sha; l.dirty = l.content !== sent; changed = true; pushed++;
-      }
-    }
-    if (changed) { await DB.replace(); changed = false; }
-    rebuildIndex();
-    if (!cur || !notes.has(cur) || notes.get(cur).deleted) {
-      if (!activeSpaces().some(s => s.folder === space)) { space = ''; rebuildIndex(); }
-      const next = live().sort((a, b) => b.mtime - a.mtime)[0];
-      cur = null; if (next) await openNote(next.path);
-    } else {
-      // Follow the open note if another device created or removed the space it belongs to.
-      if (spaceOf(cur) !== space) { space = spaceOf(cur); rebuildIndex(); }
-      showPulled(notes.get(cur));
-      if (images) editor.refresh();
-    }
-    renderSpace(); renderList(); renderBacklinks();
-    setStatus('Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
-      (pushed ? ` · pushed ${pushed}` : '') + (restored ? ` · restored ${restored} deleted note${restored > 1 ? 's' : ''} edited elsewhere` : ''));
-  } catch (e) {
-    // Keep what was already pulled or pushed; the lock path persists its own snapshot.
-    if (changed && epoch === Auth.epoch) await DB.replace().catch(() => {});
-    if (epoch === Auth.epoch) setStatus('Sync failed: ' + e.message, true);
-  } finally { if (syncing === epoch) syncing = null; }
+  })();
+  try { await syncPromise; }
+  catch (e) { if (epoch === Auth.epoch) setStatus('Sync failed: ' + e.message, true); if (options.strict) throw e; }
+  finally { if (syncing === epoch) { syncing = null; syncPromise = null; } }
 }
+async function encryptedSync(epoch) {
+  await flush(); Auth.ensure(epoch);
+  const cloud = Auth.cloud, base = await cloud.load(); Auth.ensure(epoch);
+  const remote = new Map(base.manifest.entries.map(e => [e.path, e]));
+  const today = new Date().toISOString().slice(0, 10), pulled = new Map();
+  // Validate every changed remote record before applying any of them to the editor.
+  await pool(base.manifest.entries.filter(e => !e.deleted && (e.kind === 'note' ? notes : files).get(e.path)?.sha !== e.ref.revisionId), 2, async e => {
+    const bytes = await cloud.read(e.ref); Auth.ensure(epoch);
+    if (e.kind === 'note') pulled.set(e.path, { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes) });
+    else { const id = await Auth.store.putFile(bytes); Auth.ensure(epoch); pulled.set(e.path, { id, size: bytes.length }); }
+  });
+  let images = false, restored = 0;
+  for (const e of base.manifest.entries) {
+    const map = e.kind === 'note' ? notes : files, old = map.get(e.path), incoming = pulled.get(e.path);
+    if (e.deleted) {
+      if (!old) continue;
+      if (old.dirty && !old.deleted) {
+        // An intentional new/restored note may reuse a deleted path; stale edited copies become conflicts.
+        if (!old.sha) continue;
+        const cp = conflictPath(e.path, map, today);
+        map.set(cp, { ...old, path: cp, sha: null, dirty: true });
+        if (cur === e.path) cur = cp;
+      }
+      if (e.kind === 'note' && !old.deleted) await keepVersion(e.path, old.content, 'sync', true);
+      map.delete(e.path); images ||= e.kind === 'file'; continue;
+    }
+    if (!incoming) continue;
+    if (e.kind === 'note') {
+      const text = incoming.text;
+      if (!old) notes.set(e.path, { path: e.path, content: text, sha: e.ref.revisionId, dirty: false, mtime: e.mtime });
+      else if (old.deleted) {
+        // A remote edit made after the local delete must survive.
+        restored++;
+        Object.assign(old, { content: text, sha: e.ref.revisionId, deleted: false, dirty: false, mtime: e.mtime });
+      } else if (!old.dirty) {
+        if (old.content !== text) await keepVersion(e.path, old.content, 'sync');
+        Object.assign(old, { content: text, sha: e.ref.revisionId, mtime: e.mtime }); showPulled(old);
+      } else if (e.path === SPACES) {
+        old.content = mergeSpaces(old.content, text); old.sha = e.ref.revisionId; old.dirty = old.content !== text;
+      } else if (old.content !== text) {
+        const cp = conflictPath(e.path, notes, today);
+        notes.set(cp, { path: cp, content: text, sha: null, dirty: true, mtime: e.mtime }); old.sha = e.ref.revisionId;
+      } else { old.sha = e.ref.revisionId; old.dirty = false; }
+    } else {
+      const meta = { path: e.path, ...incoming, sha: e.ref.revisionId, dirty: false, mtime: e.mtime };
+      if (!old || !old.dirty) files.set(e.path, meta);
+      else {
+        const mine = await Auth.store.getFile(old.id), theirs = await Auth.store.getFile(incoming.id); Auth.ensure(epoch);
+        if (sameBytes(mine, theirs)) { old.sha = e.ref.revisionId; old.dirty = false; }
+        else { const cp = conflictPath(e.path, files, today); files.set(cp, { ...meta, path: cp, sha: null, dirty: true }); old.sha = e.ref.revisionId; }
+      }
+      images = true;
+    }
+  }
+  Auth.ensure(epoch);
+  Auth.store.cloud.checkpoint = base; cloud.checkpoint = base;
+  await DB.replace();
+  const staged = [], entries = new Map(remote);
+  // Attachments are prepared before notes; the head only publishes after all records exist.
+  for (const [kind, map] of [['file', files], ['note', notes]]) for (const item of [...map.values()]) {
+    const previous = entries.get(item.path);
+    if (previous && previous.kind !== kind) throw new Error('A note and attachment have conflicting paths.');
+    if (item.deleted) {
+      if (previous && !previous.deleted) {
+        entries.set(item.path, { ...previous, deleted: true, mtime: item.mtime }); staged.push({ map, item, deleted: true });
+      }
+      continue;
+    }
+    if (!item.dirty && item.sha) continue;
+    const sent = kind === 'note' ? item.content : item.id;
+    const data = kind === 'note' ? sent : await Auth.store.getFile(sent); Auth.ensure(epoch);
+    const ref = await cloud.upload(kind, data, previous?.ref.objectId); Auth.ensure(epoch);
+    entries.set(item.path, { path: item.path, kind, deleted: false, mtime: item.mtime, ref });
+    staged.push({ map, item, sent, ref, kind });
+  }
+  let checkpoint = base;
+  if (staged.length) checkpoint = await cloud.publish(base, [...entries.values()]);
+  Auth.ensure(epoch);
+  // A conditional head write confirms publication before any draft is marked clean.
+  Auth.store.cloud.checkpoint = checkpoint; cloud.checkpoint = checkpoint;
+  for (const s of staged) {
+    if (s.map.get(s.item.path) !== s.item) continue;
+    if (s.deleted) { if (s.item.deleted) s.map.delete(s.item.path); }
+    else { s.item.sha = s.ref.revisionId; s.item.dirty = s.kind === 'note' ? s.item.content !== s.sent : s.item.id !== s.sent; }
+  }
+  await DB.replace(); Auth.ensure(epoch);
+  rebuildIndex();
+  if (!cur || !notes.has(cur) || notes.get(cur).deleted) {
+    if (!activeSpaces().some(s => s.folder === space)) { space = ''; rebuildIndex(); }
+    const next = live().sort((a, b) => b.mtime - a.mtime)[0]; cur = null; if (next) await openNote(next.path);
+  } else {
+    if (spaceOf(cur) !== space) { space = spaceOf(cur); rebuildIndex(); }
+    showPulled(notes.get(cur)); if (images) editor.refresh();
+  }
+  renderSpace(); renderList(); renderBacklinks();
+  setStatus('Encrypted sync ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+    (restored ? `; restored ${restored} deleted note${restored === 1 ? '' : 's'} changed on another device` : ''));
+}
+
 // Run fn over items with limited concurrency. On failure, stop taking new items and wait for the rest to settle.
 async function pool(items, limit, fn) {
   let next = 0; const errors = [];
@@ -1246,12 +1219,12 @@ async function createSpace(name) {
   // An existing folder in Main becomes the space as it is: its notes move over without any file changes.
   const inFolder = [...notes.values()].filter(n => isNote(n) && topFolder(n.path)?.toLowerCase() === key);
   const folder = inFolder.length ? topFolder(inFolder[0].path) : typed;
-  if (inFolder.length && !confirm(`${inFolder.length} note${inFolder.length > 1 ? 's' : ''} in "${folder}/" will move into this space. Files stay where they are in GitHub.`)) return;
+  if (inFolder.length && !confirm(`${inFolder.length} note${inFolder.length > 1 ? 's' : ''} in "${folder}/" will move into this space. Note contents are kept.`)) return;
   await saveSpaces([...spaceList.filter(s => s.folder.toLowerCase() !== key), { folder, name, updated: Date.now() }]);
   $('#dlg-spaces').close();
   await switchSpace(folder);
 }
-// Edit the space name in place (the GitHub folder keeps its name); Enter or blur saves, Escape cancels.
+// Edit the space name in place (the logical folder keeps its name); Enter or blur saves, Escape cancels.
 function renameSpace(folder, row) {
   Auth.ensure();
   const go = row.querySelector('.go');
@@ -1271,7 +1244,7 @@ function renameSpace(folder, row) {
 }
 async function removeSpace(folder) {
   Auth.ensure();
-  if (!confirm(`Remove the "${spaceName(folder)}" space? No notes are deleted: they stay in GitHub and appear in Main as the "${folder}" folder.`)) return;
+  if (!confirm(`Remove the "${spaceName(folder)}" space? No notes are deleted: they appear in Main as the "${folder}" folder.`)) return;
   await saveSpaces(spaceList.map(s => s.folder === folder ? { ...s, removed: true, updated: Date.now() } : s));
   if (space === folder || spaceOf(cur || '') !== space) await switchSpace('');
   else { renderList(); renderBacklinks(); }
@@ -1317,7 +1290,6 @@ $('#sp-new').onsubmit = async e => {
 $('#cfg').onclick = () => {
   Auth.ensure();
   $('#c-url').value = Auth.settings.url || '';
-  $('#c-branch').value = Auth.settings.branch || 'main';
   $('#c-pw').value = ''; $('#c-err').textContent = '';
   $('#dlg-cfg').showModal();
 };
@@ -1327,7 +1299,7 @@ $('#lock').onclick = () => Auth.lock();
 $('#c-save').onclick = async () => {
   const button = $('#c-save'); button.disabled = true;
   try {
-    await Auth.connect($('#c-url').value, $('#c-branch').value, $('#c-pw').value);
+    await Auth.connect($('#c-url').value, null, $('#c-pw').value);
     $('#c-pw').value = ''; $('#dlg-cfg').close(); sync();
   } catch (error) { if (Auth.active) $('#c-err').textContent = error.message; }
   finally { $('#c-pw').value = ''; button.disabled = false; }
@@ -1342,7 +1314,7 @@ $('#change-save').onclick = async () => {
   $('#change-save').disabled = true;
   try {
     await Auth.changePassword($('#old-password').value, $('#new-password').value);
-    if (Auth.active) { $('#dlg-password').close(); setStatus('Local password updated.'); }
+    if (Auth.active) { $('#dlg-password').close(); setStatus('Password, vault keys and recovery key updated.'); }
   } catch (error) { if (Auth.active) $('#change-error').textContent = error.message; }
   finally { $('#old-password').value = ''; $('#new-password').value = ''; $('#change-save').disabled = false; }
 };
@@ -1461,7 +1433,7 @@ document.addEventListener('visibilitychange', () => {
 /* ---------- init ---------- */
 const WELCOME = `# Welcome to Vault
 
-Your notes are plain markdown files, stored in this browser and synced to your own private GitHub repo.
+Your notes are encrypted on this device and end-to-end encrypted before syncing to your private GitHub repository.
 
 - Link notes with [[wikilinks]] — try [[Example Note]] (click it to create it)
 - Type \`[[\` to autocomplete note names
@@ -1505,6 +1477,7 @@ const App = {
     const last = Auth.store.last, legacy = typeof last === 'string' ? last : null;
     if (legacy || !last) Auth.store.last = { space: '', notes: {} };
     for (const d of Array.isArray(Auth.store.last.folders) ? Auth.store.last.folders : []) if (typeof d === 'string') expanded.add(d);
+    if (![...notes.values()].some(isNote) && Auth.session && Auth.store.cloud?.checkpoint?.manifest.entries.some(e => e.kind === 'note' && !e.deleted && e.path !== SPACES)) await sync({ strict: true });
     if (![...notes.values()].some(isNote)) await createNote('Welcome', WELCOME);
     // Older versions stored edit, split or view; all of them now open in live preview.
     setSource(localStorage.getItem('vault.mode') === 'source');
@@ -1513,7 +1486,7 @@ const App = {
     if (getCfg()) sync();
     else setStatus('Saved notes unlocked — offline or sign in in Settings to sync');
   },
-  flush, sync
+  flush, sync, async waitSync() { try { await syncPromise; } catch {} }
 };
 Auth.start(App, SYNC_URL);
 

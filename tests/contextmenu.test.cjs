@@ -1,52 +1,10 @@
-const { test, before, after } = require('node:test');
+const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { chromium } = require('playwright');
-const http = require('node:http');
-const fs = require('node:fs');
-const path = require('node:path');
-let server, browser, base;
-const password = 'test password with plenty of entropy';
-const url = 'https://sync.example';
-
-before(async () => {
-  const root = path.join(__dirname, '..');
-  server = http.createServer((req, res) => {
-    const name = new URL(req.url, 'http://localhost').pathname;
-    const file = path.join(root, name === '/' ? 'index.html' : name);
-    if (!file.startsWith(root)) { res.writeHead(403).end(); return; }
-    try {
-      res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.html') ? 'text/html' : 'text/plain');
-      // The app's CSP only allows the real sync Worker; let the page reach the mock server instead.
-      const body = fs.readFileSync(file);
-      res.end(name === '/' || name === '/index.html' ? body.toString().replace('https://vault-sync-01.chriscleven.workers.dev;', url + ';') : body);
-    } catch { res.writeHead(404).end(); }
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  base = 'http://127.0.0.1:' + server.address().port;
-  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : chromium.executablePath()), headless: true, args: ['--no-sandbox'] });
-});
-after(async () => { await browser?.close(); await new Promise(resolve => server?.close(resolve)); });
-
+const { harness, browserName, unlock, settled } = require('./support/browser.cjs');
+const h = harness();
 async function unlocked(options = {}) {
-  const context = await browser.newContext({ serviceWorkers: 'block', ...options });
-  await context.route(url + '/**', async route => {
-    const req = route.request(), pathname = new URL(req.url()).pathname;
-    const headers = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS', 'Content-Type': 'application/json' };
-    if (req.method() === 'OPTIONS') { await route.fulfill({ status: 204, headers }); return; }
-    let body = {}, status = 200;
-    if (pathname === '/login') { const exp = Date.now() + 86400000; body = { session: exp + '.fake-session', exp }; }
-    else status = 404;
-    await route.fulfill({ status, headers, body: JSON.stringify(body) }).catch(() => {});
-  });
-  const page = await context.newPage();
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await page.goto(base);
-  await page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
-  await page.locator('#unlock-url').fill(url);
-  await page.locator('#unlock-password').fill(password);
-  await page.locator('#unlock-submit').click();
-  await page.waitForFunction(() => Auth.active);
+  const { context, page, errors } = await h.fixture({ legacy: false, ...options });
+  await unlock(page); await settled(page);
   await page.evaluate(async () => {
     await createNote('Alpha', 'First line of alpha');
     await createNote('Beta', 'Beta links [[Alpha]]');
@@ -100,7 +58,7 @@ test('right click opens a placeholder menu that names the context and closes aga
   } finally { await context.close(); }
 });
 
-test('a touch long press over 700 ms opens the menu; shorter presses and drags do not', async () => {
+test('a touch long press over 700 ms opens the menu; shorter presses and drags do not', { skip: browserName !== 'chromium' && 'CDP touch injection is Chromium-only' }, async () => {
   const { context, page, errors } = await unlocked({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 760 } });
   try {
     const cdp = await context.newCDPSession(page);
@@ -214,3 +172,4 @@ test('the gear menu holds rarely used actions; the toolbar fits on one row on a 
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+
