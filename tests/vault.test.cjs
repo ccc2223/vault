@@ -64,6 +64,7 @@ test('interrupted rotation survives reload and resumes only under the new local 
   try {
     await unlock(f.page); await settled(f.page); f.state.failCommit = true;
     assert.match((await rotate(f)).error, /new password/); await locked(f.page);
+    assert.match(await f.page.locator('#unlock-info').textContent(), /NEW password/);
     assert.equal(f.protocol.git.head().value.epoch, 1);
     await f.page.reload(); await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
     await unlock(f.page, password); assert.equal(await f.page.evaluate(() => Auth.active), false);
@@ -71,6 +72,7 @@ test('interrupted rotation survives reload and resumes only under the new local 
     await unlock(f.page, f.state.password); await settled(f.page);
     assert.equal(f.protocol.git.head().value.epoch, 2); assert.equal(await editorText(f.page), secret);
     assert.equal(await f.page.evaluate(() => Auth.store.rotation), null);
+    assert.equal(await f.page.evaluate(() => sessionStorage.getItem('vault.rotation-pending')), null);
   } finally { await f.context.close(); }
 });
 test('recovery key on a fresh device rotates all credentials and preserves synced records', async () => {
@@ -174,18 +176,106 @@ test('late sync response cannot restore notes after locking', async () => {
   } finally { await f.context.close(); }
 });
 
+test('lock clears template callbacks, hidden titles and popups before saving, then reloads once', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      await createNote('Templates/Private template title', 'Private template body');
+      openHistory(false); $('#dlg-hist').close();
+      pickTemplate(() => {}); $('#dlg-cmd').close();
+      $('#sp-name').value = 'Private space draft';
+      ContextMenu.open(20, 100, $('#list .item'));
+      TablePicker.open(100, 100, () => {});
+      window.oldDocument = true;
+      const write = Auth.store.write.bind(Auth.store);
+      Auth.store.write = async (...args) => {
+        await new Promise(resolve => { window.releaseLockSave = resolve; });
+        return write(...args);
+      };
+      void Auth.lock();
+    });
+    await f.page.waitForFunction(() => !!window.releaseLockSave);
+    assert.equal(await f.page.locator('#lock-heading').textContent(), 'Saving and locking…');
+    await f.page.evaluate(() => navigator.serviceWorker.dispatchEvent(new Event('controllerchange')));
+    await f.page.waitForTimeout(100);
+    assert.equal(await f.page.evaluate(() => window.oldDocument), true, 'updates cannot reload while saving');
+    assert.deepEqual(await f.page.evaluate(() => ({
+      templates: cmdItems, commands: cmdRes.length, history: $('#h-title').textContent,
+      spaceDraft: $('#sp-name').value, popups: document.querySelectorAll('#ctx, #tpick').length,
+      plaintext: document.body.textContent.includes('Private template title')
+    })), { templates: null, commands: 0, history: 'History', spaceDraft: '', popups: 0, plaintext: false });
+    let reloads = 0;
+    f.page.on('framenavigated', frame => { if (frame === f.page.mainFrame()) reloads++; });
+    await f.page.evaluate(() => window.releaseLockSave());
+    await locked(f.page);
+    assert.equal(await f.page.evaluate(() => window.oldDocument), undefined);
+    assert.equal(reloads, 1);
+    await f.page.waitForTimeout(100);
+    assert.equal(reloads, 1, 'locking and pagehide do not cause a reload loop');
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await f.page.evaluate(() => notes.get('Templates/Private template title.md').content), 'Private template body');
+    await f.page.evaluate(() => { window.secondDocument = true; });
+    await f.page.getByRole('button', { name: 'Lock now', exact: true }).click(); await locked(f.page);
+    assert.equal(await f.page.evaluate(() => window.secondDocument), undefined, 'subsequent locks also discard their document');
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
+test('attachment decryption finishing after key cleanup cannot return plaintext or recreate an image URL', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.evaluate(async () => {
+      const id = await Auth.store.putFile(Uint8Array.of(1, 2, 3));
+      const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+      crypto.subtle.decrypt = async (...args) => {
+        const data = await decrypt(...args);
+        await new Promise(resolve => { window.releaseDecryption = resolve; });
+        return data;
+      };
+      window.decryption = attachmentURL({ id, path: 'late.png' }).then(() => 'plaintext returned', e => e.message);
+      Auth.reload = () => { window.reloadCalled = true; };
+    });
+    await f.page.waitForFunction(() => !!window.releaseDecryption);
+    await f.page.evaluate(() => Auth.lock());
+    await f.page.waitForFunction(() => !!window.reloadCalled);
+    assert.equal(await f.page.evaluate(() => Auth.store.key), null);
+    await f.page.evaluate(() => window.releaseDecryption());
+    assert.match(await f.page.evaluate(() => window.decryption), /locked/);
+    assert.equal(await f.page.evaluate(() => urls.size), 0);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
+});
+
 test('failed lock save hides notes and preserves unsaved text for a successful retry', async () => {
   const f = await fixture();
   try {
     await unlock(f.page); await settled(f.page);
     await f.page.locator('#ed .cm-content').fill('Unsaved recovery text');
-    await f.page.evaluate(() => { window.realWrite = Auth.store.write; Auth.store.write = async () => { throw new Error('Disk full'); }; });
+    await f.page.evaluate(() => { window.oldDocument = true; window.realWrite = Auth.store.write; Auth.store.write = async () => { throw new Error('Disk full'); }; });
     await f.page.getByRole('button', { name: 'Lock now', exact: true }).click();
     await f.page.waitForFunction(() => Auth.lockFailed && !Auth.locking);
     assert.equal(await editorText(f.page), '');
     assert.equal(await f.page.locator('#unlock-submit').isDisabled(), true);
+    assert.equal(await f.page.locator('#lock-heading').textContent(), 'Lock incomplete');
+    assert.equal(await f.page.locator('#recover-open').isDisabled(), true);
+    assert.equal(await f.page.title(), 'Vault — Lock incomplete');
+    assert.match(await f.page.locator('#unlock-error').textContent(), /decrypted data and keys remain in memory/i);
+    assert.equal(await f.page.evaluate(() => Auth.store.key !== null && Auth.store.records.size > 0), true);
+    await f.page.evaluate(() => Auth.recover());
+    assert.equal(await f.page.evaluate(() => Auth.store.key !== null && Auth.store.records.size > 0), true, 'recovery cannot discard retained edits');
+    await f.page.evaluate(() => navigator.serviceWorker.dispatchEvent(new Event('controllerchange')));
+    await f.page.waitForTimeout(100);
+    assert.equal(await f.page.evaluate(() => window.oldDocument), true, 'save failure must not reload');
+    assert.equal(await f.page.evaluate(() => {
+      const event = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(event); return event.defaultPrevented;
+    }), true, 'warn before losing retained edits');
     await f.page.evaluate(() => { Auth.store.write = window.realWrite; });
     await f.page.locator('#retry-lock').click(); await locked(f.page);
+    assert.equal(await f.page.evaluate(() => window.oldDocument), undefined);
     f.state.offline = true;
     await unlock(f.page); await settled(f.page);
     assert.equal(await editorText(f.page), 'Unsaved recovery text');
@@ -199,8 +289,8 @@ test('service worker supports offline reload and never caches sync or authentica
     await unlock(f.page); await settled(f.page);
     await f.page.evaluate(async () => { await window.registerShell(); await navigator.serviceWorker.ready; });
     await f.page.waitForFunction(() => !!navigator.serviceWorker.controller);
-    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     f.shellOffline(true); f.state.offline = true;
+    await f.page.locator('#gear').click(); await f.page.locator('#lock').click(); await locked(f.page);
     await f.page.reload();
     await f.page.waitForFunction(() => !document.getElementById('unlock-submit').disabled);
     assert.equal(await editorText(f.page), '');
@@ -215,6 +305,35 @@ test('service worker supports offline reload and never caches sync or authentica
     assert.ok(cached.some(value => value.endsWith('secure-store.js')));
     assert.deepEqual(f.errors, []);
   } finally { f.shellOffline(false); await f.context.close(); }
+});
+
+test('an unlock finishing after a failed lock cannot discard retained data or replace the failure message', async () => {
+  const f = await fixture();
+  try {
+    await unlock(f.page); await settled(f.page);
+    await f.page.getByRole('button', { name: 'Lock now', exact: true }).click(); await locked(f.page);
+    await f.page.evaluate(p => {
+      Auth.login = () => new Promise(resolve => { window.releaseLogin = resolve; });
+      window.realWrite = Auth.store.write;
+      Auth.store.write = async () => { throw new Error('Disk full'); };
+      $('#unlock-password').value = p; void Auth.unlock();
+    }, password);
+    await f.page.waitForFunction(() => !!window.releaseLogin);
+    await f.page.evaluate(() => Auth.lock());
+    await f.page.waitForFunction(() => Auth.lockFailed && !Auth.locking);
+    await f.page.evaluate(() => window.releaseLogin());
+    await f.page.waitForFunction(() => !Auth.preparing);
+    assert.equal(await f.page.evaluate(() => Auth.store.key !== null && Auth.store.records.size > 0), true);
+    assert.equal(await f.page.locator('#lock-heading').textContent(), 'Lock incomplete');
+    assert.match(await f.page.locator('#unlock-error').textContent(), /Disk full/);
+    assert.equal(await f.page.locator('#unlock-submit').isDisabled(), true);
+    await f.page.evaluate(() => { Auth.store.write = window.realWrite; });
+    await f.page.locator('#retry-lock').click(); await locked(f.page);
+    f.state.offline = true;
+    await unlock(f.page); await settled(f.page);
+    assert.equal(await editorText(f.page), secret);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.context.close(); }
 });
 
 test('locking during rename preserves both the replacement note and deletion marker', async () => {

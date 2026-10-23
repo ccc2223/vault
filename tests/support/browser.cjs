@@ -126,7 +126,7 @@ async function settled(page) {
 }
 const raw = page => page.evaluate(async () => ({ sealed: Auth.store.db ? await Auth.store.read() : undefined, settings: Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])) }));
 async function locked(page) {
-  await page.waitForFunction(() => !Auth.active && !Auth.locking && !Auth.lockFailed);
+  await page.waitForFunction(() => typeof Auth !== 'undefined' && !Auth.active && !Auth.locking && !Auth.lockFailed && !Auth.reloadPending && !document.getElementById('unlock-submit').disabled);
   assert.equal(await editorText(page), ''); assert.equal(await page.locator('#list').textContent(), '');
   assert.equal(await page.evaluate(() => Auth.store.key === null && Auth.session === null && notes.size === 0), true);
 }
@@ -135,8 +135,10 @@ async function rotate(f, next = 'new longer password for test') {
   await f.page.evaluate(({ old, next }) => { window.rotation = Auth.changePassword(old, next).then(() => null, e => e.message); }, { old: password, next });
   await f.page.locator('#dlg-recovery-key[open]').waitFor();
   const key = await f.page.locator('#recovery-key').inputValue();
+  // A failed rotation now locks and reloads; subscribe before confirming the key.
+  const result = f.page.evaluate(() => window.rotation);
   await f.page.locator('#recovery-confirm').fill(key); await f.page.locator('#recovery-confirm-save').click();
-  const error = await f.page.evaluate(() => window.rotation);
+  const error = await result;
   return { key, error };
 }
 module.exports = { harness, launch, browserName, password, secret, url, unlock, settled, locked, raw, editorText, rotate };

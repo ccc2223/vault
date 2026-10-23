@@ -175,8 +175,11 @@ const LiveEditor = (() => {
         img.onload = () => view.requestMeasure();
         if (this.src.url) wrap.append(hooks.protectImage(img, this.src.url));
         else {
+          const epoch = Auth.epoch;
           img.dataset.att = this.src.path;
-          hooks.imageURL(this.src.path).then(u => { img.src = u; }, () => img.replaceWith(missing(this.name)));
+          hooks.imageURL(this.src.path).then(u => {
+            if (Auth.active && epoch === Auth.epoch && img.isConnected) img.src = u;
+          }, () => { if (Auth.active && epoch === Auth.epoch && img.isConnected) img.replaceWith(missing(this.name)); });
           wrap.append(img);
         }
         if (this.sel) for (const dir of ['e', 's', 'se']) {

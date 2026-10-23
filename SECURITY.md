@@ -44,6 +44,10 @@ An old password or recovery key cannot unlock the new head; a new session is req
 
 ## Limits and trust
 
+Locking hides the editor immediately and cancels sync requests. After saving pending changes as ciphertext, it clears keys, decrypted collections, template callbacks, history titles and previews, closes popups, revokes attachment URLs, and reloads the page to discard the old application context. Late attachment decryptions are rejected after key cleanup, and closed cloud clients cannot refill their plaintext caches. A service worker update cannot force a reload while locking is in progress or saving has failed.
+
+If encrypted saving fails, the lock screen explicitly reports **Lock incomplete**. Decrypted data and keys remain in memory so unsaved edits can be retried; unlocking is disabled and navigation prompts warn about losing the retained edits. The app does not automatically reload or discard them. A successful retry saves the edits, clears sensitive state, and reloads. Reloading reduces retained application state but does not guarantee physical memory erasure, and it cannot remove clipboard contents, downloaded copies, browser HTTP caches, swap or crash dumps. A non-secret session-storage flag preserves the new-password instruction across reload when password rotation is pending.
+
 Ciphertext lengths, object counts, revision timing, IPs and Git authors remain visible. The static application publisher, origin, browser, extensions and dependencies are trusted while unlocked. Browser APIs cannot guarantee physical zeroization, defeat local malware or prevent screenshots. CSP, sanitization, bundled dependencies, explicit remote-image loading and lock fencing reduce exposure but do not remove that trust.
 
 A stored checkpoint detects ordinary rollback and omission on a known device. New devices cannot establish freshness independently. There are no signed cross-device transparency logs, hardware-bound keys or malicious-server fork proofs. Public password wrappers permit offline guessing: choose a high-entropy password even though online login uses an unguessable secret.

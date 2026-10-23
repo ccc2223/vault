@@ -5,14 +5,20 @@
   class CloudVault {
     constructor(request, bundle, checkpoint = null) {
       this.request = request; this.bundle = bundle; this.checkpoint = checkpoint; this.cache = new Map();
+      this.closed = false;
+    }
+    close() {
+      this.closed = true; this.cache.clear(); this.bundle = null; this.checkpoint = null;
     }
     async read(ref, bundle = this.bundle) {
+      if (this.closed) throw new Error('Vault is locked.');
       C.ref(ref, ref.kind);
       const key = [bundle.epoch, ref.kind, ref.objectId, ref.revisionId, ref.sha].join(':');
       if (!this.cache.has(key)) {
         const { record, sha } = await this.request('/vault/objects/' + ref.objectId + '/' + ref.revisionId);
         if (sha !== ref.sha || await C.gitSha(record) !== ref.sha) throw new Error('Encrypted object hash does not match.');
         const data = await C.decrypt(bundle, record, ref);
+        if (this.closed) { data.fill(0); throw new Error('Vault is locked.'); }
         if (ref.kind === 'file') return data;
         this.cache.set(key, data);
       }

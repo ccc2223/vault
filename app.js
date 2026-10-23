@@ -404,7 +404,7 @@ function searchTag(tag) {
   const q = '#' + tag;
   $('#q').value = $('#q').value.trim().toLowerCase() === q.toLowerCase() ? '' : q;
   renderList();
-  document.body.classList.add('drawer');
+  openSidebar();
 }
 $('#tag-list').addEventListener('click', e => { const b = e.target.closest('button[data-tag]'); if (b) searchTag(b.dataset.tag); });
 $('#tags').addEventListener('toggle', () => { try { localStorage.setItem('vault.tags', $('#tags').open ? 'open' : ''); } catch {} });
@@ -1352,7 +1352,7 @@ $('#cmd').onclick = () => openCommands();
   command('New note from template…', newFromTemplate);
   command('Insert template…', insertTemplate, '', hasNote);
   command('Open note…', openSwitcher, 'Mod+O');
-  command('Search notes', () => { document.body.classList.add('drawer'); $('#q').focus(); }, 'Mod+Shift+F');
+  command('Search notes', () => { openSidebar(); $('#q').focus(); }, 'Mod+Shift+F');
   command('Switch space…', openSpaces, 'Mod+Shift+O');
   command('Rename note', () => $('#title').focus(), '', hasNote);
   command('Move note to trash', deleteNote, '', hasNote);
@@ -1360,7 +1360,7 @@ $('#cmd').onclick = () => openCommands();
   command('Open trash', () => openHistory(true));
   command('Toggle outline', () => toggleOutline(), '', hasNote);
   command('Show tasks', openTasks);
-  command('Show tags', () => { document.body.classList.add('drawer'); $('#tags').open = true; $('#tag-list button')?.focus(); });
+  command('Show tags', () => { openSidebar(); $('#tags').open = true; $('#tag-list button')?.focus(); });
   command('Insert table…', () => $('#tbl').click(), '', hasNote);
   command('Insert image…', () => $('#img').click(), '', hasNote);
   command('Insert code block', () => editor.insertCodeBlock(), '', hasNote);
@@ -1378,7 +1378,19 @@ $('#cmd').onclick = () => openCommands();
 }
 $('#sync').onclick = sync;
 $('#switch').onclick = openSwitcher;
-$('#menu').onclick = () => document.body.classList.toggle('drawer');
+function openSidebar() {
+  document.body.classList.remove('sidebar-collapsed');
+  document.body.classList.add('drawer');
+}
+$('#menu').onclick = () => {
+  if (matchMedia('(max-width:800px)').matches) document.body.classList.toggle('drawer');
+  else openSidebar();
+};
+$('#side-collapse').onclick = () => {
+  document.body.classList.remove('drawer');
+  if (matchMedia('(min-width:801px)').matches) document.body.classList.add('sidebar-collapsed');
+  $('#menu').focus();
+};
 {
   // Gear menu for rarely used actions. Each item keeps its own click handler; picking one closes the menu first.
   const gear = $('#gear'), box = $('#gear-menu'), items = () => [...box.querySelectorAll('button:not(:disabled)')];
@@ -1416,13 +1428,13 @@ document.addEventListener('keydown', e => {
   else if (mod && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); openSpaces(); }
   else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openSwitcher(); }
   else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); sync(); }
-  else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); document.body.classList.add('drawer'); $('#q').focus(); }
+  else if (mod && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); openSidebar(); $('#q').focus(); }
   else if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setSource(!editor.source); }
   else if (e.altKey && e.code === 'KeyN') { e.preventDefault(); $('#new').click(); }
   else if (e.altKey && e.code === 'KeyD') { e.preventDefault(); openToday(); }
 });
 window.addEventListener('beforeunload', e => {
-  if (Auth.store.pending || (Auth.active && saveT)) { e.preventDefault(); e.returnValue = ''; }
+  if (Auth.lockFailed || Auth.locking || Auth.store.pending || (Auth.active && saveT)) { e.preventDefault(); e.returnValue = ''; }
 });
 document.addEventListener('visibilitychange', () => {
   if (!Auth.active) return;
@@ -1456,19 +1468,26 @@ const App = {
   },
   clear() {
     clearTimeout(saveT); saveT = null; clearTimeout(syncT);
+    cancelAnimationFrame(outlineT); outlineT = 0;
+    ContextMenu.close(); TablePicker.close();
     notes.clear(); files.clear(); expanded.clear(); revokeImages(); cur = null; space = ''; rebuildIndex(); syncing = null;
     $('#space-name').textContent = ''; $('#sp-list').replaceChildren();
     editor.load(''); $('#list').replaceChildren();
-    $('#title').textContent = ''; document.title = 'Vault — Locked';
+    $('#title').textContent = ''; document.title = 'Vault';
     $('#bl-body').replaceChildren(); $('#bl-sum').textContent = 'Backlinks';
     $('#tag-list').replaceChildren(); $('#ol-list').replaceChildren(); $('#tags-sum').textContent = 'Tags';
-    $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-list').replaceChildren(); cmdRes = [];
+    $('#q').value = ''; $('#qs-in').value = ''; $('#qs-list').replaceChildren(); $('#cmd-in').value = ''; $('#cmd-in').placeholder = 'Type a command…'; $('#cmd-list').replaceChildren(); cmdRes = []; cmdItems = null; cmdEmpty = '';
     $('#sug').replaceChildren(); $('#sug').style.display = 'none';
     qsRes = []; sugItems = []; sugStart = -1;
     versioned.clear(); histItems = []; $('#h-list').replaceChildren(); $('#h-view').textContent = ''; $('#trash-n').hidden = $('#tasks-n').hidden = true; $('#tk-list').replaceChildren(); taskRows = [];
+    $('#h-title').textContent = 'History'; $('#h-hint').textContent = ''; $('#tk-sum').textContent = '';
+    $('#sp-name').value = ''; $('#img-in').value = '';
+    $('#dlg-img img').removeAttribute('src'); $('#dlg-img img').alt = '';
+    for (const id of ['h-err', 'sp-err', 'c-err', 'change-error']) $('#' + id).textContent = '';
+    $('#gear-menu').hidden = true; $('#gear').setAttribute('aria-expanded', 'false');
     for (const dialog of document.querySelectorAll('dialog[open]')) dialog.close();
     for (const input of document.querySelectorAll('input[type=password]')) input.value = '';
-    $('#status').textContent = 'Locked'; document.body.classList.remove('drawer');
+    document.body.classList.remove('drawer');
   },
   async open() {
     for (const note of await DB.all()) notes.set(note.path, note);

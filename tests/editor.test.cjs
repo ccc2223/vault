@@ -635,6 +635,7 @@ test('deleted notes go to the trash and earlier versions come back, encrypted on
     assert.deepEqual(await texts(), before);
 
     // Delete forever empties the trash.
+    await f.page.evaluate(() => { window.confirm = () => true; });
     await f.page.locator('#trash').click();
     await f.page.locator('#h-forget').click();
     await f.page.locator('#h-list .none', { hasText: 'The trash is empty.' }).waitFor();

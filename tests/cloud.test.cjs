@@ -25,6 +25,26 @@ test('lost upload and head responses resolve idempotently without duplicate publ
   assert.equal((await f.client().load()).manifest.entries[0].path, 'Lost.md');
   assert.equal(f.git.files.size, 4); // initial manifest, note, next manifest, head
 });
+test('closing a cloud client drops cached plaintext and rejects a decryption finishing after close', async () => {
+  const f = await fixture(); await f.put('Private.md', 'private cache contents');
+  const client = f.client(), base = await client.load();
+  assert.ok(client.cache.size > 0);
+  const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+  let release, ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  crypto.subtle.decrypt = async (...args) => { const data = await decrypt(...args); ready(); await gate; return data; };
+  try {
+    const read = client.read(base.manifest.entries[0].ref);
+    await started;
+    client.close();
+    assert.equal(client.bundle, null); assert.equal(client.checkpoint, null); assert.equal(client.cache.size, 0);
+    release();
+    await assert.rejects(read, /locked/);
+    assert.equal(client.cache.size, 0, 'late decryption cannot refill the cache');
+    await assert.rejects(client.read(base.manifest.entries[0].ref), /locked/);
+  } finally { release(); crypto.subtle.decrypt = decrypt; }
+});
 test('missing, substituted, tampered or omitted objects fail before caller applies a checkpoint', async () => {
   const f = await fixture(); await f.put('Keep.md', 'unsynced local draft stays safe');
   const base = await f.client().load(), entry = base.manifest.entries[0], p = 'e2ee/objects/' + entry.ref.objectId + '/' + entry.ref.revisionId + '.enc';

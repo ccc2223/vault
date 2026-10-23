@@ -48,6 +48,7 @@ Vault is an installable web app (PWA) with an Obsidian-style editor: live previe
 - Sync conflicts never overwrite text: the other copy is saved as `Note (conflict YYYY-MM-DD).md`.
 - Works offline from the encrypted local cache; syncs when you are back online.
 - Auto-locks after one hour of inactivity, on page hide, and across tabs. Only one tab can have the vault open at a time.
+- Locking hides notes immediately, saves encrypted changes, clears keys and decrypted UI state, then reloads the page. If saving fails, Vault shows **Lock incomplete** and keeps edits in memory for retry; keep the tab open until saving succeeds.
 
 ## Keyboard shortcuts
 

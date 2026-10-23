@@ -135,7 +135,9 @@
       const key = this.key;
       const record = await request(this.db.transaction(name).objectStore(name).get(id));
       if (!record) throw new Error(missing);
-      return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.iv, additionalData: aad(id) }, key, record.data));
+      const bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: record.iv, additionalData: aad(id) }, key, record.data));
+      if (this.key !== key) { bytes.fill(0); throw new Error('Vault is locked.'); }
+      return bytes;
     }
     putFile(bytes) { return this.seal('files', fileAAD, bytes); }
     getFile(id) { return this.unseal('files', fileAAD, id, 'Attachment is missing from this device.'); }

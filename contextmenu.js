@@ -37,6 +37,7 @@ const ContextMenu = (() => {
   ];
 
   function close() {
+    stopPress();
     if (!menu) return;
     menu.remove(); menu = null;
     removeEventListener('resize', close); removeEventListener('blur', close);

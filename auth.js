@@ -5,7 +5,16 @@ const Auth = {
   controller: new AbortController(), settings: {}, lastActivity: 0, preparing: false, setupToken: '',
   idleMs: 60 * 60 * 1000, timer: null, release: null, locking: null, lockFailed: false,
   critical: Promise.resolve(), channel: null, changing: false,
+  reloadPending: false, leaving: false,
   message(id, text) { document.getElementById(id).textContent = text; },
+  lockStatus(state, message) {
+    this.message('lock-heading', state === 'saving' ? 'Saving and locking…' : state === 'failed' ? 'Lock incomplete' : 'Vault is locked');
+    this.message('unlock-info', message);
+    document.getElementById('recover-open').disabled = state !== 'locked';
+    document.getElementById('status').textContent = state === 'saving' ? 'Saving and locking…' : state === 'failed' ? 'Lock incomplete' : 'Locked';
+    document.title = 'Vault — ' + document.getElementById('status').textContent;
+  },
+  reload() { if (!this.leaving) location.reload(); },
   ensure(epoch = this.epoch) {
     if (!this.active || epoch !== this.epoch) throw new Error('Vault is locked.');
     if (!this.checkIdle()) throw new Error('Vault locked after one hour of inactivity.');
@@ -49,13 +58,16 @@ const Auth = {
   releaseLease() { this.release?.(); this.release = null; },
   async lock(message = 'Vault is locked. Enter your password to continue.', broadcast = true) {
     if (this.locking) return this.locking;
+    if (this.reloadPending) return;
+    const shouldReload = this.active || this.preparing || !!this.store.key;
     const wasActive = this.active;
     const snapshot = wasActive ? this.app.snapshot() : null;
     this.active = false; this.epoch++; this.session = null;
     this.controller.abort(); clearTimeout(this.timer);
     document.body.dataset.locked = 'true'; this.app.clear();
     document.getElementById('unlock-submit').disabled = true;
-    this.message('unlock-info', this.store.key ? 'Saving encrypted notes and locking…' : message);
+    this.lockStatus('saving', 'Saving encrypted notes before clearing keys. Keep this tab open.');
+    this.message('unlock-error', ''); document.getElementById('retry-lock').hidden = true;
     if (broadcast) {
       this.channel?.postMessage('lock');
       try { localStorage.setItem('vault.lock', String(Date.now()) + ':' + crypto.randomUUID()); } catch {}
@@ -63,25 +75,35 @@ const Auth = {
     this.locking = (async () => {
       try {
         await this.critical.catch(() => {});
+        this.app.clear();
+        this.lockStatus('saving', 'Saving encrypted notes before clearing keys. Keep this tab open.');
         if (snapshot) {
           this.store.records = new Map(snapshot.notes.map(note => [note.path, note]));
           this.store.files = new Map(snapshot.files.map(file => [file.path, file]));
           this.store.last = snapshot.last; this.store.history = snapshot.history;
         }
         if (this.store.key) { await this.store.persist(); await this.store.drain(); }
-        this.cloud?.cache.clear(); this.cloud = null; this.bundle = null; this.preparing = false; this.changing = false;
+        // Retain only a non-secret notice across reload, never a password, key, title or error.
+        try {
+          if (this.store.rotation) sessionStorage.setItem('vault.rotation-pending', 'true');
+          else sessionStorage.removeItem('vault.rotation-pending');
+        } catch {}
+        this.cloud?.close(); this.cloud = null; this.bundle = null; this.preparing = false; this.changing = false;
         this.store.forget(); this.releaseLease(); this.lockFailed = false;
         document.getElementById('retry-lock').hidden = true;
-        this.message('unlock-error', ''); this.message('unlock-info', message);
+        this.message('unlock-error', ''); this.lockStatus('locked', message);
+        this.reloadPending = shouldReload;
       } catch (error) {
         // Keep the last unsaved copy behind the lock screen instead of losing it.
         this.lockFailed = true;
+        this.lockStatus('failed', 'Notes are hidden, but decrypted data and keys remain in memory until saving succeeds.');
         this.message('unlock-error', 'Could not save the last edits: ' + error.message +
-          ' Keep this tab open and retry. Notes are hidden, but locking cannot finish until the save succeeds.');
+          ' Decrypted data and keys remain in memory. Keep this tab open and retry. Do not close or reload it.');
         document.getElementById('retry-lock').hidden = false;
       } finally {
         this.locking = null;
-        document.getElementById('unlock-submit').disabled = this.lockFailed;
+        document.getElementById('unlock-submit').disabled = this.lockFailed || this.reloadPending;
+        if (this.reloadPending) setTimeout(() => this.reload(), 0);
       }
     })();
     return this.locking;
@@ -154,18 +176,22 @@ const Auth = {
       if (this.active && !this.checkIdle()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
       if (this.active && event.isTrusted) this.activity();
     }, { capture: true, passive: false });
-    for (const type of ['focus', 'pageshow']) window.addEventListener(type, () => this.checkIdle());
-    window.addEventListener('pagehide', () => { void this.lock('Enter your password to reopen Vault.'); });
+    window.addEventListener('focus', () => this.checkIdle());
+    window.addEventListener('pageshow', () => { this.leaving = false; if (this.reloadPending) this.reload(); else this.checkIdle(); });
+    window.addEventListener('pagehide', () => { this.leaving = true; void this.lock('Enter your password to reopen Vault.'); });
     try {
       if (!crypto.subtle || !navigator.locks) throw new Error('Vault requires HTTPS and a current browser with Web Crypto and Web Locks.');
       if (this.settings.vaultId) await this.openStore(this.settings.vaultId);
       const saved = this.store.db && await this.store.read();
       this.message('unlock-info', saved ? 'Enter your vault password. Saved notes also work offline.' : this.setupToken ? 'Create a vault password of 15–256 characters.' : 'Enter your vault password to connect this device.');
+      try { if (sessionStorage.getItem('vault.rotation-pending') === 'true') this.message('unlock-info', 'Password rotation is pending. Unlock with the NEW password to resume.'); } catch {}
       document.getElementById('setup-confirm-row').hidden = !this.setupToken;
       document.getElementById('unlock-submit').disabled = false;
     } catch (error) { this.message('unlock-error', error.message); }
     if ('serviceWorker' in navigator) {
-      if (navigator.serviceWorker.controller) navigator.serviceWorker.addEventListener('controllerchange', () => { if (!this.active && !this.preparing) location.reload(); });
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!this.active && !this.preparing && !this.locking && !this.lockFailed && !this.store.key && !this.reloadPending) this.reload();
+      });
       navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
     }
   },
@@ -197,7 +223,7 @@ const Auth = {
     });
   },
   async unlock() {
-    if (this.active || this.preparing || this.locking || this.lockFailed) return;
+    if (this.active || this.preparing || this.locking || this.lockFailed || this.reloadPending) return;
     const button = document.getElementById('unlock-submit'), input = document.getElementById('unlock-password');
     let password = input.value; input.value = ''; button.disabled = true;
     this.preparing = true; const attempt = ++this.epoch;
@@ -241,14 +267,17 @@ const Auth = {
       }
       if (attempt !== this.epoch) throw new Error('Unlock cancelled.');
       this.remember(); password = ''; document.getElementById('unlock-confirm').value = '';
+      try { sessionStorage.removeItem('vault.rotation-pending'); } catch {}
       this.active = true; this.lastActivity = Date.now(); this.armTimer(); document.body.dataset.locked = 'false';
       await this.app.open(); if (warning) document.getElementById('status').textContent = warning;
       this.message('unlock-info', '');
     } catch (error) {
       if (this.active) await this.lock('Opening failed. Your encrypted notes were kept.');
-      else if (!this.locking) { this.store.forget(); this.bundle = null; this.cloud = null; this.session = null; this.releaseLease(); }
-      this.message('unlock-error', error.message);
-    } finally { password = ''; this.preparing = false; button.disabled = this.lockFailed; }
+      else if (!this.locking && !this.lockFailed && !this.reloadPending) {
+        this.store.forget(); this.bundle = null; this.cloud?.close(); this.cloud = null; this.session = null; this.releaseLease();
+      }
+      if (!this.locking && !this.lockFailed && !this.reloadPending) this.message('unlock-error', error.message);
+    } finally { password = ''; this.preparing = false; button.disabled = this.lockFailed || !!this.locking || this.reloadPending; }
   },
   async connect(value, ignoredBranch, password) {
     const epoch = this.ensure(); VaultCrypto.password(password);
@@ -268,7 +297,7 @@ const Auth = {
         try { await this.store.rekey(null, password); }
         catch (error) { if (this.store.header.salt === salt) this.store.cloud = previous; throw error; }
       })();
-      await this.critical; this.ensure(epoch); this.bundle = bundle; this.cloud?.cache.clear(); this.cloud = this.client();
+      await this.critical; this.ensure(epoch); this.bundle = bundle; this.cloud?.close(); this.cloud = this.client();
     } catch (error) {
       if (this.store.header?.salt === salt && this.active) this.session = previousSession;
       throw error;
@@ -298,7 +327,7 @@ const Auth = {
       await this.login(next);
     } else throw new Error('Vault changed during password rotation. Encrypted local state was kept.');
     this.store.cloud = { bundle: next, checkpoint }; this.store.rotation = null;
-    await this.store.persist(); await this.store.drain(); this.bundle = next; this.cloud?.cache.clear(); this.cloud = this.client();
+    await this.store.persist(); await this.store.drain(); this.bundle = next; this.cloud?.close(); this.cloud = this.client();
   },
   async changePassword(oldPassword, newPassword) {
     const epoch = this.ensure(); VaultCrypto.password(newPassword);
@@ -334,6 +363,7 @@ const Auth = {
     } finally { this.changing = false; }
   },
   async recover() {
+    if (this.active || this.preparing || this.locking || this.lockFailed || this.reloadPending) return;
     const button = document.getElementById('recover-submit'); button.disabled = true;
     let attempt;
     let recovery = document.getElementById('recovery-input').value, password = document.getElementById('recovery-password').value;
@@ -363,10 +393,12 @@ const Auth = {
       this.remember();
       this.active = true; this.lastActivity = Date.now(); this.armTimer(); document.body.dataset.locked = 'false'; await this.app.open();
     } catch (e) {
-      this.message('unlock-error', e.message);
-      if (this.store.rotation) this.message('unlock-info', 'Recovery is pending. Unlock with your new password to resume.');
+      if (!this.locking && !this.lockFailed && !this.reloadPending) {
+        this.message('unlock-error', e.message);
+        if (this.store.rotation) this.message('unlock-info', 'Recovery is pending. Unlock with your new password to resume.');
+      }
       if (this.active) await this.lock('Recovery did not finish. Encrypted local state was kept.');
-      else if (!this.locking) { this.session = null; this.bundle = null; this.cloud = null; this.store.forget(); this.releaseLease(); }
+      else if (!this.locking && !this.lockFailed && !this.reloadPending) { this.session = null; this.bundle = null; this.cloud?.close(); this.cloud = null; this.store.forget(); this.releaseLease(); }
     } finally { recovery = ''; password = ''; this.preparing = false; button.disabled = false; }
   }
 };
