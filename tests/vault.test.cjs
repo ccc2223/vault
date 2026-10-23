@@ -180,7 +180,7 @@ test('failed lock save hides notes and preserves unsaved text for a successful r
     await unlock(f.page); await settled(f.page);
     await f.page.locator('#ed .cm-content').fill('Unsaved recovery text');
     await f.page.evaluate(() => { window.realWrite = Auth.store.write; Auth.store.write = async () => { throw new Error('Disk full'); }; });
-    await f.page.locator('#gear').click(); await f.page.locator('#lock').click();
+    await f.page.getByRole('button', { name: 'Lock now', exact: true }).click();
     await f.page.waitForFunction(() => Auth.lockFailed && !Auth.locking);
     assert.equal(await editorText(f.page), '');
     assert.equal(await f.page.locator('#unlock-submit').isDisabled(), true);

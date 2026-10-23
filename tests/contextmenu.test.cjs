@@ -142,7 +142,7 @@ test('the gear menu holds rarely used actions; the toolbar fits on one row on a 
   const { context, page, errors } = await unlocked({ hasTouch: true, isMobile: true, viewport: { width: 375, height: 700 } });
   try {
     const visible = await page.locator('#bar > button:visible, #bar > div > button:visible').evaluateAll(els => els.map(e => e.id));
-    assert.deepEqual(visible, ['menu', 'tbl', 'img', 'code', 'ol-btn', 'switch', 'gear']);
+    assert.deepEqual(visible, ['menu', 'tbl', 'img', 'code', 'ol-btn', 'switch', 'gear', 'lock-now']);
     const tops = await page.locator('#bar button:visible').evaluateAll(els => new Set(els.map(e => Math.round(e.getBoundingClientRect().top))).size);
     assert.equal(tops, 1, 'one row of buttons');
 

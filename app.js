@@ -1296,6 +1296,7 @@ $('#cfg').onclick = () => {
 $('#c-cancel').onclick = () => $('#dlg-cfg').close();
 $('#c-clear').onclick = () => Auth.lock('Signed out. Enter your password to unlock.');
 $('#lock').onclick = () => Auth.lock();
+$('#lock-now').onclick = () => Auth.lock();
 $('#c-save').onclick = async () => {
   const button = $('#c-save'); button.disabled = true;
   try {
